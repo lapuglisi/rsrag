@@ -2,56 +2,81 @@ use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
 use std::env;
 
-use crate::engine::llama::LlamaEngine;
+const RAGAPI_DEFAULT_HOST: &str = "127.0.0.1";
+const RAGAPI_DEFAULT_PORT: u16 = 9091;
 
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct RagConfig {
   pub http: HttpConfig,
   pub llama: LlamaConfig,
   pub qdrant: QdrantConfig,
 }
 
-#[derive(Deserialize, Clone, Debug, Default)]
+impl Default for RagConfig {
+  fn default() -> Self {
+    Self {
+      http: HttpConfig::default(),
+      llama: LlamaConfig::default(),
+      qdrant: QdrantConfig::default(),
+    }
+  }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct HttpConfig {
   pub host: String,
   pub port: u16,
 }
 
-#[derive(Deserialize, Clone, Debug, Default)]
+impl Default for HttpConfig {
+  fn default() -> Self {
+    Self {
+      host: RAGAPI_DEFAULT_HOST.to_string(),
+      port: RAGAPI_DEFAULT_PORT,
+    }
+  }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct LlamaConfig {
   pub chat_server: String,
   pub embed_server: String,
   pub rerank_server: String,
 }
 
-#[derive(Deserialize, Clone, Debug, Default)]
+impl Default for LlamaConfig {
+  fn default() -> Self {
+    Self {
+      chat_server: "127.0.0.1".to_string(),
+      embed_server: "127.0.0.1".to_string(),
+      rerank_server: "127.0.0.1".to_string(),
+    }
+  }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct QdrantConfig {
   pub host: String,
   pub port: u16,
   pub query_limit: u64,
 }
 
-// Add defaults
-impl RagConfig {
-  pub fn default() -> Self {
+impl Default for QdrantConfig {
+  fn default() -> Self {
     Self {
-      http: HttpConfig {
-        host: "127.0.0.1".into(),
-        port: 9091,
-      },
-      llama: LlamaConfig {
-        chat_server: "127.0.0.1".into(),
-        embed_server: "127.0.0.1".into(),
-        rerank_server: "127.0.0.1".into(),
-      },
-      qdrant: QdrantConfig {
-        host: "127.0.0.1".into(),
-        port: 6334,
-        query_limit: 0,
-      },
+      host: "127.0.0.1".to_string(),
+      port: 6334,
+      query_limit: 0,
     }
   }
+}
 
+// Add defaults
+impl RagConfig {
   pub fn load(cfg: Option<String>) -> Result<Self, ConfigError> {
     let path: String = env::var("XDG_CONFIG_HOME").unwrap_or_default();
     let home: String = env::var("HOME").unwrap_or_default();
@@ -70,7 +95,6 @@ impl RagConfig {
     println!("[rsrag] using config file: {}", config_path);
 
     let config = Config::builder()
-      .set_default("llama.embed_server", "buscosexo")?
       .add_source(File::with_name(&config_path))
       .add_source(Environment::with_prefix("RSRAG").separator("_"))
       .build()?;

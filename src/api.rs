@@ -54,7 +54,11 @@ impl<'r> RagApi<'r> {
     self
   }
 
-  pub async fn listen(self) {
+  pub async fn listen(self) -> Result<(), Box<dyn std::error::Error>> {
+    if self.llama.is_none() {
+      Err("[ragapi::listen] no llama engine configured")?
+    }
+
     let st = RagApiState {
       llama: self.llama.unwrap().clone(),
     };
@@ -73,6 +77,8 @@ impl<'r> RagApi<'r> {
     println!("[rsrag::api] listening on '{}'...", address);
 
     let _ = axum::serve(listener, app).await;
+
+    Ok(())
   }
 }
 
@@ -82,7 +88,22 @@ async fn api_embeddings(
 ) -> impl IntoResponse {
   println!("[api_embeddings] payload is {:?}", payload);
 
-  (StatusCode::OK, "")
+  match st.llama.get_embeddings(&payload.input).await {
+    Ok(v) => {
+      println!("successfull request: {:?}", v);
+
+      let er = EmbedResponse {
+        model: v.model,
+        embeddings: v.embedding,
+      };
+
+      return (
+        StatusCode::OK,
+        serde_json::to_string(&er).unwrap_or("".into()),
+      );
+    }
+    Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+  }
 }
 
 async fn api_completion(

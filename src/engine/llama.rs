@@ -7,29 +7,50 @@ struct LlamaEmbedRequest {
   input: String,
 }
 
-// Constants
-const LLAMA_DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
+//
+// Llama Embedding Response
+//
+#[derive(Serialize, Debug)]
+pub struct EmbedResponse {
+  pub model: String,
+  pub embedding: Vec<f32>,
+}
 
-#[derive(Clone)]
+#[derive(Deserialize, Debug)]
+struct LlamaEmbedResponseData {
+  index: u32,
+  object: String,
+  embedding: Vec<f32>,
+}
+
+#[derive(Deserialize, Debug)]
+struct LlamaEmbedResponseUsage {
+  prompt_tokens: u32,
+  total_tokens: u32,
+}
+
+#[derive(Deserialize, Debug)]
+struct LlamaEmbedResponse {
+  model: String,
+  object: String,
+  usage: LlamaEmbedResponseUsage,
+  data: Vec<LlamaEmbedResponseData>,
+}
+////////////////////////////
+
+#[derive(Clone, Default)]
 pub struct LlamaEngine {
   embed_server: String,
   llama_server: String,
   rerank_server: String,
-  chat_model: Option<String>,
-  embed_model: Option<String>,
-  rerank_model: Option<String>,
+  chat_model: String,
+  embed_model: String,
+  rerank_model: String,
 }
 
 impl<'l> LlamaEngine {
   pub fn new() -> Self {
-    Self {
-      embed_server: LLAMA_DEFAULT_SERVER.into(),
-      llama_server: LLAMA_DEFAULT_SERVER.into(),
-      rerank_server: LLAMA_DEFAULT_SERVER.into(),
-      rerank_model: None,
-      chat_model: None,
-      embed_model: None,
-    }
+    LlamaEngine::default()
   }
 
   pub fn with_llama_server(mut self, s: &str) -> Self {
@@ -48,7 +69,17 @@ impl<'l> LlamaEngine {
   }
 
   pub fn with_chat_model(mut self, s: &str) -> Self {
-    self.chat_model = Some(s.into());
+    self.chat_model = s.into();
+    self
+  }
+
+  pub fn with_embed_model(mut self, s: &str) -> Self {
+    self.embed_model = s.into();
+    self
+  }
+
+  pub fn with_rerank_model(mut self, s: &str) -> Self {
+    self.rerank_model = s.into();
     self
   }
 
@@ -57,44 +88,44 @@ impl<'l> LlamaEngine {
     println!("embed_server ..... {}", self.embed_server);
     println!("llama_server ..... {}", self.llama_server);
     println!("rerank_server .... {}", self.rerank_server);
-    println!(
-      "chat_model ....... {}",
-      self.chat_model.unwrap_or("undefined".into())
-    );
-    println!(
-      "embed_model ...... {}",
-      self.embed_model.unwrap_or("undefined".into())
-    );
-    println!(
-      "rerank_model ..... {}",
-      self.rerank_model.unwrap_or("undefined".into())
-    );
+    println!("chat_model ....... {}", self.chat_model);
+    println!("embed_model ...... {}", self.embed_model);
+    println!("rerank_model ..... {}", self.rerank_model);
   }
 
   // Endpoints implementation
   pub async fn get_embeddings(
     self,
     input: &str,
-  ) -> Result<Option<Vec<f32>>, Box<dyn std::error::Error>> {
+  ) -> Result<EmbedResponse, Box<dyn std::error::Error>> {
     let url = format!("{}/v1/embeddings", self.embed_server);
-    let req = LlamaEmbedRequest {
+    let er = LlamaEmbedRequest {
       input: input.into(),
     };
 
-    println!("making request to {}", url);
+    let json = serde_json::to_string(&er)?;
+
+    println!("sending request to {}", url);
+    println!("json is {}", json);
 
     let client = Client::new()
       .post(url)
       .header("Content-Type", "application/json")
-      .body("{\"input\": \"busco sexo\"}")
+      .body(json)
       .timeout(Duration::from_secs(5))
       .send()
       .await?;
 
     let body = client.text().await?;
+    let erp: LlamaEmbedResponse = serde_json::from_str(&body)?;
 
-    println!("response body: {}", body);
+    let embed = EmbedResponse {
+      model: erp.model,
+      embedding: erp.data[0].embedding.clone(),
+    };
 
-    Ok(None)
+    println!("returning response: {:?}", embed);
+
+    Ok(embed)
   }
 }
