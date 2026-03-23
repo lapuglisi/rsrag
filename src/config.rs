@@ -78,6 +78,7 @@ impl Default for QdrantConfig {
 // Add defaults
 impl RagConfig {
   pub fn load(cfg: Option<String>) -> Result<Self, ConfigError> {
+    // TODO: use unwrap_or[_else] when definin path/home.
     let path: String = env::var("XDG_CONFIG_HOME").unwrap_or_default();
     let home: String = env::var("HOME").unwrap_or_default();
     let config_path: String;
