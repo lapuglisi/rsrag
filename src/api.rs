@@ -1,5 +1,13 @@
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{
+  Json, Router,
+  extract::State,
+  http::StatusCode,
+  response::{IntoResponse, sse::Event, sse::Sse},
+  routing::post,
+};
+use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 
 use crate::engine::llama::LlamaEngine;
 
@@ -17,6 +25,13 @@ struct EmbedRequest {
 struct EmbedResponse {
   model: String,
   embeddings: Vec<f32>,
+}
+
+#[derive(Deserialize, Debug)]
+struct CompletionRequest {
+  model: String,
+  prompt: String,
+  temperature: f32,
 }
 
 #[derive(Clone)]
@@ -65,7 +80,7 @@ impl<'r> RagApi<'r> {
 
     let app: Router = Router::new()
       .route("/api/embeddings", post(api_embeddings))
-      .route("/api/completion", post(api_completion))
+      .route("/api/completion", post(api_completion_sse))
       .with_state(st);
 
     let address = format!("{}:{}", self.host, self.port);
@@ -88,29 +103,29 @@ async fn api_embeddings(
 ) -> impl IntoResponse {
   println!("[api_embeddings] payload is {:?}", payload);
 
-  match st.llama.get_embeddings(&payload.input).await {
+  let resp = match st.llama.get_embeddings(&payload.input).await {
     Ok(v) => {
-      println!("successfull request: {:?}", v);
-
       let er = EmbedResponse {
         model: v.model,
         embeddings: v.embedding,
       };
 
-      return (
-        StatusCode::OK,
-        serde_json::to_string(&er).unwrap_or("".into()),
-      );
+      (StatusCode::OK, serde_json::to_string(&er).unwrap())
     }
-    Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-  }
+    Err(e) => (
+      StatusCode::INTERNAL_SERVER_ERROR,
+      format!("embeddings error: {}", e),
+    ),
+  };
+
+  resp.into_response()
 }
 
-async fn api_completion(
+async fn api_completion_sse(
   State(st): State<RagApiState>,
-  Json(payload): Json<EmbedRequest>,
-) -> impl IntoResponse {
+  Json(payload): Json<CompletionRequest>,
+) -> String {
   println!("[api_completion] payload is {:?}", payload);
 
-  (StatusCode::OK, "")
+  String::from("not implemented")
 }

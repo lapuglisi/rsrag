@@ -2,6 +2,83 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+//
+// Llama completion
+//
+#[derive(Serialize, Debug)]
+struct LlamaCompletionRequest {
+  model: String,
+  messages: Vec<LlamaCompletionMessages>,
+  temperature: f32,
+  n_predict: i32,
+  top_k: i32,
+  top_p: f32,
+  stream: bool,
+}
+
+impl Default for LlamaCompletionRequest {
+  fn default() -> Self {
+    Self {
+      model: String::new(),
+      messages: Vec::new(),
+      temperature: 0.8,
+      n_predict: -1,
+      top_k: 40,
+      top_p: 0.9,
+      stream: true,
+    }
+  }
+}
+
+impl LlamaCompletionRequest {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  pub fn with_model(mut self, m: &str) -> Self {
+    self.model = m.into();
+    self
+  }
+
+  pub fn messages(self) -> Vec<LlamaCompletionMessages> {
+    self.messages
+  }
+
+  pub fn with_temperature(mut self, t: f32) -> Self {
+    self.temperature = t;
+    self
+  }
+
+  pub fn with_n_predict(mut self, p: i32) -> Self {
+    self.n_predict = p;
+    self
+  }
+
+  pub fn with_top_k(mut self, k: i32) -> Self {
+    self.top_k = k;
+    self
+  }
+}
+
+#[derive(Serialize, Debug)]
+struct LlamaCompletionMessages {
+  role: String,
+  content: String,
+}
+
+impl Default for LlamaCompletionMessages {
+  fn default() -> Self {
+    Self {
+      role: "user".to_string(),
+      content: String::new(),
+    }
+  }
+}
+
+//
+//
+//
+
 #[derive(Serialize, Deserialize)]
 struct LlamaEmbedRequest {
   input: String,
@@ -127,5 +204,9 @@ impl<'l> LlamaEngine {
     println!("returning response: {:?}", embed);
 
     Ok(embed)
+  }
+
+  pub async fn get_completion() -> String {
+    String::from("Busco completion com rag")
   }
 }
