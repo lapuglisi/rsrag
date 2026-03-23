@@ -1,2 +1,2 @@
 # rsrag
-RAG pipeline with qdrant and llama written in Rust
+RAG pipeline with qdrant and llama.cpp written in Rust
