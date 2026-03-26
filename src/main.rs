@@ -11,7 +11,11 @@ mod engine;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let settings: RagConfig = crate::config::RagConfig::load(None)?;
 
-  let log_level = LevelFilter::Info;
+  let log_level = if settings.log_debug {
+    LevelFilter::Debug
+  } else {
+    LevelFilter::Info
+  };
   let log_file = settings.log_file.to_owned();
 
   println!("using log file '{}'.", log_file);

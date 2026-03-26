@@ -9,6 +9,7 @@ const RAGAPI_DEFAULT_PORT: u16 = 9091;
 #[serde(default)]
 pub struct RagConfig {
   pub log_file: String,
+  pub log_debug: bool,
   pub http: HttpConfig,
   pub llama: LlamaConfig,
   pub qdrant: QdrantConfig,
@@ -18,6 +19,7 @@ impl Default for RagConfig {
   fn default() -> Self {
     Self {
       log_file: String::from("./rsrag.log"),
+      log_debug: false,
       http: HttpConfig::default(),
       llama: LlamaConfig::default(),
       qdrant: QdrantConfig::default(),
