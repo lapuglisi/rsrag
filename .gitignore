@@ -2,3 +2,4 @@
 [Ss]ession.vim
 /*.toml
 /Cargo.lock
+*.log

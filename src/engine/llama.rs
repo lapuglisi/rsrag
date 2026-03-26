@@ -1,19 +1,29 @@
-use reqwest::{Client, StatusCode};
+use crate::api::CompletionRequest;
+use futures_util::Stream;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 //
 // Llama completion
 //
+
+const LLAMA_DEFAULT_TEMPERATURE: f32 = 0.8;
+const LLAMA_DEFAULT_NPREDICT: i32 = -1;
+const LLAMA_DEFAULT_TOP_K: u32 = 40;
+const LLAMA_DEFAULT_TOP_P: f32 = 0.9;
+const LLAMA_DEFAULT_STREAM: bool = false;
+
 #[derive(Serialize, Debug)]
-struct LlamaCompletionRequest {
-  model: String,
-  messages: Vec<LlamaCompletionMessages>,
-  temperature: f32,
-  n_predict: i32,
-  top_k: i32,
-  top_p: f32,
-  stream: bool,
+#[serde(default)]
+pub struct LlamaCompletionRequest {
+  pub model: String,
+  pub messages: Vec<LlamaCompletionMessage>,
+  pub temperature: f32,
+  pub n_predict: i32,
+  pub top_k: u32,
+  pub top_p: f32,
+  pub stream: bool,
 }
 
 impl Default for LlamaCompletionRequest {
@@ -25,7 +35,7 @@ impl Default for LlamaCompletionRequest {
       n_predict: -1,
       top_k: 40,
       top_p: 0.9,
-      stream: true,
+      stream: false,
     }
   }
 }
@@ -40,38 +50,65 @@ impl LlamaCompletionRequest {
     self
   }
 
-  pub fn messages(self) -> Vec<LlamaCompletionMessages> {
-    self.messages
-  }
-
-  pub fn with_temperature(mut self, t: f32) -> Self {
-    self.temperature = t;
+  pub fn add_message(mut self, msg: LlamaCompletionMessage) -> Self {
+    self.messages.push(msg);
     self
   }
 
-  pub fn with_n_predict(mut self, p: i32) -> Self {
-    self.n_predict = p;
+  pub fn with_temperature(mut self, t: Option<f32>) -> Self {
+    self.temperature = t.unwrap_or(LLAMA_DEFAULT_TEMPERATURE);
     self
   }
 
-  pub fn with_top_k(mut self, k: i32) -> Self {
-    self.top_k = k;
+  pub fn with_n_predict(mut self, p: Option<i32>) -> Self {
+    self.n_predict = p.unwrap_or(LLAMA_DEFAULT_NPREDICT);
+    self
+  }
+
+  pub fn with_top_k(mut self, k: Option<u32>) -> Self {
+    self.top_k = k.unwrap_or(LLAMA_DEFAULT_TOP_K);
+    self
+  }
+
+  pub fn with_top_p(mut self, p: Option<f32>) -> Self {
+    self.top_p = p.unwrap_or(LLAMA_DEFAULT_TOP_P);
+    self
+  }
+
+  pub fn stream(mut self, s: Option<bool>) -> Self {
+    self.stream = s.unwrap_or(LLAMA_DEFAULT_STREAM);
     self
   }
 }
 
 #[derive(Serialize, Debug)]
-struct LlamaCompletionMessages {
-  role: String,
-  content: String,
+pub struct LlamaCompletionMessage {
+  pub role: String,
+  pub content: String,
 }
 
-impl Default for LlamaCompletionMessages {
+impl Default for LlamaCompletionMessage {
   fn default() -> Self {
     Self {
-      role: "user".to_string(),
+      role: String::new(),
       content: String::new(),
     }
+  }
+}
+
+impl LlamaCompletionMessage {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  pub fn with_role(mut self, role: &str) -> Self {
+    self.role = role.to_string();
+    self
+  }
+
+  pub fn with_content(mut self, content: &str) -> Self {
+    self.content = content.to_string();
+    self
   }
 }
 
@@ -80,19 +117,13 @@ impl Default for LlamaCompletionMessages {
 //
 
 #[derive(Serialize, Deserialize)]
-struct LlamaEmbedRequest {
-  input: String,
+pub struct LlamaEmbedRequest {
+  pub input: String,
 }
 
 //
 // Llama Embedding Response
 //
-#[derive(Serialize, Debug)]
-pub struct EmbedResponse {
-  pub model: String,
-  pub embedding: Vec<f32>,
-}
-
 #[derive(Deserialize, Debug)]
 struct LlamaEmbedResponseData {
   index: u32,
@@ -117,12 +148,12 @@ struct LlamaEmbedResponse {
 
 #[derive(Clone, Default)]
 pub struct LlamaEngine {
-  embed_server: String,
-  llama_server: String,
-  rerank_server: String,
-  chat_model: String,
-  embed_model: String,
-  rerank_model: String,
+  pub embed_server: String,
+  pub llama_server: String,
+  pub rerank_server: String,
+  pub chat_model: String,
+  pub embed_model: String,
+  pub rerank_model: String,
 }
 
 impl<'l> LlamaEngine {
@@ -174,7 +205,7 @@ impl<'l> LlamaEngine {
   pub async fn get_embeddings(
     self,
     input: &str,
-  ) -> Result<EmbedResponse, Box<dyn std::error::Error>> {
+  ) -> Result<crate::api::EmbedResponse, Box<dyn std::error::Error>> {
     let url = format!("{}/v1/embeddings", self.embed_server);
     let er = LlamaEmbedRequest {
       input: input.into(),
@@ -182,31 +213,44 @@ impl<'l> LlamaEngine {
 
     let json = serde_json::to_string(&er)?;
 
-    println!("sending request to {}", url);
-    println!("json is {}", json);
+    log::info!("sending request to {}", url);
+    log::info!("json is {}", json);
 
     let client = Client::new()
       .post(url)
       .header("Content-Type", "application/json")
       .body(json)
-      .timeout(Duration::from_secs(5))
+      .timeout(Duration::from_secs(60))
       .send()
       .await?;
 
     let body = client.text().await?;
     let erp: LlamaEmbedResponse = serde_json::from_str(&body)?;
 
-    let embed = EmbedResponse {
+    let embed = crate::api::EmbedResponse {
       model: erp.model,
-      embedding: erp.data[0].embedding.clone(),
+      embeddings: erp.data[0].embedding.clone(),
     };
 
-    println!("returning response: {:?}", embed);
+    log::debug!("returning response: {:?}", embed);
 
     Ok(embed)
   }
 
-  pub async fn get_completion() -> String {
-    String::from("Busco completion com rag")
+  pub async fn get_completion(
+    self,
+    request: LlamaCompletionRequest,
+  ) -> impl Stream<Item = Result<axum::body::Bytes, reqwest::Error>> {
+    let url = format!("{}/v1/chat/completions", self.llama_server);
+
+    let json = serde_json::to_string(&request).unwrap_or(String::new());
+
+    Client::new()
+      .post(url)
+      .body(json)
+      .send()
+      .await
+      .expect("could not request completion")
+      .bytes_stream()
   }
 }

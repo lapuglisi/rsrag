@@ -8,6 +8,7 @@ const RAGAPI_DEFAULT_PORT: u16 = 9091;
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct RagConfig {
+  pub log_file: String,
   pub http: HttpConfig,
   pub llama: LlamaConfig,
   pub qdrant: QdrantConfig,
@@ -16,6 +17,7 @@ pub struct RagConfig {
 impl Default for RagConfig {
   fn default() -> Self {
     Self {
+      log_file: String::from("./rsrag.log"),
       http: HttpConfig::default(),
       llama: LlamaConfig::default(),
       qdrant: QdrantConfig::default(),
@@ -78,7 +80,7 @@ impl Default for QdrantConfig {
 // Add defaults
 impl RagConfig {
   pub fn load(cfg: Option<String>) -> Result<Self, ConfigError> {
-    // TODO: use unwrap_or[_else] when definin path/home.
+    // TODO: use unwrap_or[_else] when defining path/home.
     let path: String = env::var("XDG_CONFIG_HOME").unwrap_or_default();
     let home: String = env::var("HOME").unwrap_or_default();
     let config_path: String;
