@@ -9,11 +9,11 @@ use std::time::Duration;
 // Llama completion
 //
 
-const LLAMA_DEFAULT_TEMPERATURE: f32 = 0.8;
-const LLAMA_DEFAULT_NPREDICT: i32 = -1;
-const LLAMA_DEFAULT_TOP_K: u32 = 40;
-const LLAMA_DEFAULT_TOP_P: f32 = 0.9;
-const LLAMA_DEFAULT_STREAM: bool = false;
+pub const LLAMA_DEFAULT_TEMPERATURE: f32 = 0.8;
+pub const LLAMA_DEFAULT_NPREDICT: i32 = 512;
+pub const LLAMA_DEFAULT_TOP_K: u32 = 40;
+pub const LLAMA_DEFAULT_TOP_P: f32 = 0.9;
+pub const LLAMA_DEFAULT_STREAM: bool = false;
 
 #[derive(Serialize, Debug)]
 #[serde(default)]
@@ -33,7 +33,7 @@ impl Default for LlamaCompletionRequest {
       model: String::new(),
       messages: Vec::new(),
       temperature: 0.8,
-      n_predict: -1,
+      n_predict: 1024,
       top_k: 40,
       top_p: 0.9,
       stream: false,

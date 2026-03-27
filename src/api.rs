@@ -2,11 +2,13 @@ use axum::{Json, Router, extract::State, http::StatusCode, response::IntoRespons
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{
-  llama::{LlamaCompletionMessage, LlamaCompletionRequest, LlamaEngine},
-  qdrant::{QdrantEngine, QdrantQuery},
+  llama::{
+    LLAMA_DEFAULT_NPREDICT, LLAMA_DEFAULT_STREAM, LLAMA_DEFAULT_TEMPERATURE, LLAMA_DEFAULT_TOP_K,
+    LLAMA_DEFAULT_TOP_P, LlamaCompletionMessage, LlamaCompletionRequest, LlamaEngine,
+  },
+  qdrant::{QDRANT_QUERY_DEFAULT_THRESHOLD, QdrantEngine, QdrantQuery},
 };
 
-const RAGAPI_DEFAULT_SCORE_THRESHOLD: f32 = 0.5;
 const RAGAPI_DEFAULT_HOST: &str = "127.0.0.1";
 const RAGAPI_DEFAULT_PORT: u16 = 9091;
 const RAGAPI_LLM_SYSTEM_PROMPT: &str = "You are a helpful assistant expert in answering prompts in a RAG environment.\nAnswer the user prompt using only the provided context. If you do not know the answer, simply state that you don't know.";
@@ -31,6 +33,7 @@ pub struct EmbedResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(default)]
 pub struct CompletionRequest {
   pub model: String,
   pub prompt: String,
@@ -40,6 +43,21 @@ pub struct CompletionRequest {
   pub top_k: Option<u32>,
   pub top_p: Option<f32>,
   pub threshold: Option<f32>,
+}
+
+impl Default for CompletionRequest {
+  fn default() -> Self {
+    Self {
+      model: String::new(),
+      prompt: String::new(),
+      temperature: Some(LLAMA_DEFAULT_TEMPERATURE),
+      stream: Some(LLAMA_DEFAULT_STREAM),
+      n_predict: Some(LLAMA_DEFAULT_NPREDICT),
+      top_k: Some(LLAMA_DEFAULT_TOP_K),
+      top_p: Some(LLAMA_DEFAULT_TOP_P),
+      threshold: Some(QDRANT_QUERY_DEFAULT_THRESHOLD),
+    }
+  }
 }
 
 #[derive(Clone)]
@@ -188,7 +206,7 @@ async fn get_rag_completion(state: RagApiState, req: CompletionRequest) -> impl 
   match QdrantQuery::new(state.qdrant)
     .with_collection(collection)
     .with_embeddings(er.embeddings)
-    .with_threshold(req.threshold.unwrap_or(RAGAPI_DEFAULT_SCORE_THRESHOLD))
+    .with_threshold(req.threshold.unwrap())
     .run()
     .await
   {
@@ -202,13 +220,13 @@ async fn get_rag_completion(state: RagApiState, req: CompletionRequest) -> impl 
       );
 
       let mut context: String = String::new();
-      while let Some(item) = res.iter().next() {
+      res.iter().for_each(|item| {
         if let Some(v) = item.payload["source"].as_str() {
           context.push_str(v);
           context.push_str("\n");
         }
-        break;
-      }
+        log::info!("inside foreach");
+      });
 
       let user_msg = format!(RAGAPI_LLM_USER_PROMPT!(), context, req.prompt);
       messages.push(
