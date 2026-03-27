@@ -1,7 +1,7 @@
 use crate::engine::llama::LlamaEngine;
 use crate::{config::RagConfig, engine::qdrant::QdrantEngine};
 
-use log::{LevelFilter, debug, error, info, warn};
+use log::LevelFilter;
 
 mod api;
 mod config;
@@ -28,10 +28,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
   }
 
-  info!("got settings: {:?}", settings);
+  log::info!("got settings: {:?}", settings);
 
   // then initialize llama
-  debug!("initializing llama engine.");
+  log::debug!("initializing llama engine.");
   let llama = LlamaEngine::new()
     .with_llama_server(&settings.llama.chat_server)
     .with_embed_server(&settings.llama.embed_server)
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   // then initialize qdrant
   let qdrant_url = format!("{}:{}", settings.qdrant.host, settings.qdrant.port);
-  info!("initialize qdrant: {}", qdrant_url);
+  log::info!("initialize qdrant: {}", qdrant_url);
 
   let qdrant: QdrantEngine = QdrantEngine::new(qdrant_url);
 

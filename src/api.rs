@@ -1,22 +1,21 @@
-use axum::{
-  Json, Router,
-  body::{Body, BodyDataStream},
-  extract::State,
-  http::StatusCode,
-  response::IntoResponse,
-  routing::post,
-};
-use qdrant_client::qdrant::{Query, QueryPointsBuilder};
-use qdrant_client::{Qdrant, qdrant::query};
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{
   llama::{LlamaCompletionMessage, LlamaCompletionRequest, LlamaEngine},
-  qdrant::QdrantEngine,
+  qdrant::{QdrantEngine, QdrantQuery},
 };
 
+const RAGAPI_DEFAULT_SCORE_THRESHOLD: f32 = 0.5;
 const RAGAPI_DEFAULT_HOST: &str = "127.0.0.1";
 const RAGAPI_DEFAULT_PORT: u16 = 9091;
+const RAGAPI_LLM_SYSTEM_PROMPT: &str = "You are a helpful assistant expert in answering prompts in a RAG environment.\nAnswer the user prompt using only the provided context. If you do not know the answer, simply state that you don't know.";
+
+macro_rules! RAGAPI_LLM_USER_PROMPT {
+  () => {
+    "Use the provided context to answer the question.\n\nContext: {}\n\nQuestion: {}"
+  };
+}
 
 // Structs for json requests
 #[derive(Deserialize, Debug)]
@@ -40,6 +39,7 @@ pub struct CompletionRequest {
   pub n_predict: Option<i32>,
   pub top_k: Option<u32>,
   pub top_p: Option<f32>,
+  pub threshold: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -106,7 +106,7 @@ impl<'r> RagApi<'r> {
 
     let address = format!("{}:{}", self.host, self.port);
 
-    let listener = tokio::net::TcpListener::bind(address.clone())
+    let listener = tokio::net::TcpListener::bind(&address)
       .await
       .map_err(|err| {
         format!(
@@ -127,7 +127,6 @@ impl<'r> RagApi<'r> {
 
 fn get_qdrant_colletion(model: &str) -> String {
   model
-    .trim_end_matches(".gguf")
     .chars()
     .map(|c| if c.is_ascii_punctuation() { '-' } else { c })
     .collect()
@@ -137,10 +136,13 @@ async fn api_embeddings(
   State(st): State<RagApiState>,
   Json(payload): Json<EmbedRequest>,
 ) -> impl IntoResponse {
-  log::info!("[api_embeddings] payload is {:?}", payload);
+  log::debug!("[api_embeddings] payload is {:?}", payload);
 
   let resp = match st.llama.get_embeddings(&payload.input).await {
-    Ok(v) => (StatusCode::OK, serde_json::to_string(&v).unwrap()),
+    Ok(v) => (
+      StatusCode::OK,
+      serde_json::to_string(&v).unwrap_or("{}".to_string()),
+    ),
     Err(e) => (
       StatusCode::INTERNAL_SERVER_ERROR,
       format!("embeddings error: {}", e),
@@ -162,19 +164,15 @@ async fn api_completion(
 async fn get_rag_completion(state: RagApiState, req: CompletionRequest) -> impl IntoResponse {
   // get embeddings for prompt
   let llama = state.llama.clone();
-  let rerank_url = format!("{}/v1/rerank", llama.llama_server);
-  let mut documents: Vec<String> = vec![];
+  let mut messages: Vec<LlamaCompletionMessage> = Vec::new();
 
-  let qdrant = match state.qdrant.client {
-    Some(c) => c,
-    None => {
-      return (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        String::from("no qdrant client confifured"),
-      )
-        .into_response();
-    }
-  };
+  if state.qdrant.client.is_none() {
+    return (
+      StatusCode::INTERNAL_SERVER_ERROR,
+      String::from("no qdrant client confifured"),
+    )
+      .into_response();
+  }
 
   let er: EmbedResponse = match llama.get_embeddings(&req.prompt).await {
     Ok(v) => v,
@@ -185,36 +183,48 @@ async fn get_rag_completion(state: RagApiState, req: CompletionRequest) -> impl 
 
   // Do qdrant similarity search
   let collection: String = get_qdrant_colletion(&er.model);
-  log::info!("using qdrant collection {}", collection);
+  log::info!("using qdrant collection {}", &collection);
 
-  let mut query_points = QueryPointsBuilder::new(collection)
-    .query(Query::new_nearest(er.embeddings))
-    .with_payload(true);
+  match QdrantQuery::new(state.qdrant)
+    .with_collection(collection)
+    .with_embeddings(er.embeddings)
+    .with_threshold(req.threshold.unwrap_or(RAGAPI_DEFAULT_SCORE_THRESHOLD))
+    .run()
+    .await
+  {
+    Ok(res) => {
+      log::info!("qdrant::query_points yielded {:?}", res);
 
-  if state.qdrant.limit > 0 {
-    query_points = query_points.limit(state.qdrant.limit);
-  }
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("system")
+          .with_content(RAGAPI_LLM_SYSTEM_PROMPT),
+      );
 
-  let res = match qdrant.query(query_points).await {
-    Ok(q) => q,
+      let mut context: String = String::new();
+      while let Some(item) = res.iter().next() {
+        if let Some(v) = item.payload["source"].as_str() {
+          context.push_str(v);
+          context.push_str("\n");
+        }
+        break;
+      }
+
+      let user_msg = format!(RAGAPI_LLM_USER_PROMPT!(), context, req.prompt);
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("user")
+          .with_content(&user_msg),
+      );
+    }
     Err(e) => {
-      return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+      log::info!("qdrant yielded no results {}.", e);
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("user")
+          .with_content(&req.prompt),
+      );
     }
-  };
-
-  // iterate res.result
-  let mut iter = res.result.iter();
-  while let Some(item) = iter.next() {
-    let v = item.payload["source"].as_str();
-    if v.is_some() {
-      documents.push(v.unwrap().to_string());
-      log::info!("source: {}", v.unwrap().to_string());
-    }
-  }
-
-  // rerank result
-  if documents.len() > 0 {
-    // rerank result
   }
 
   // Prepare a completion request
@@ -225,15 +235,9 @@ async fn get_rag_completion(state: RagApiState, req: CompletionRequest) -> impl 
     .with_top_p(req.top_p)
     .with_n_predict(req.n_predict)
     .stream(req.stream)
-    .add_message(
-      LlamaCompletionMessage::new()
-        .with_role("user")
-        .with_content(&req.prompt),
-    );
+    .append_messages(messages);
 
-  log::info!("request llama with {:?}", lcr);
+  log::debug!("request llama with {:?}", lcr);
 
-  let stream = state.llama.get_completion(lcr).await;
-
-  Body::from_stream(stream).into_response()
+  state.llama.get_completion(lcr).await.into_response()
 }

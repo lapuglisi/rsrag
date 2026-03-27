@@ -1,5 +1,6 @@
-use crate::api::CompletionRequest;
+use axum::{body::Body, response::IntoResponse};
 use futures_util::Stream;
+use http::StatusCode;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -52,6 +53,11 @@ impl LlamaCompletionRequest {
 
   pub fn add_message(mut self, msg: LlamaCompletionMessage) -> Self {
     self.messages.push(msg);
+    self
+  }
+
+  pub fn append_messages(mut self, mut msgs: Vec<LlamaCompletionMessage>) -> Self {
+    self.messages.append(&mut msgs);
     self
   }
 
@@ -237,20 +243,20 @@ impl<'l> LlamaEngine {
     Ok(embed)
   }
 
-  pub async fn get_completion(
-    self,
-    request: LlamaCompletionRequest,
-  ) -> impl Stream<Item = Result<axum::body::Bytes, reqwest::Error>> {
+  pub async fn get_completion(self, request: LlamaCompletionRequest) -> impl IntoResponse {
     let url = format!("{}/v1/chat/completions", self.llama_server);
+
+    log::info!("send {:?} to {}", request, url);
 
     let json = serde_json::to_string(&request).unwrap_or(String::new());
 
-    Client::new()
-      .post(url)
-      .body(json)
-      .send()
-      .await
-      .expect("could not request completion")
-      .bytes_stream()
+    let client = Client::new().post(url).body(json).send().await;
+
+    let response = match client {
+      Ok(r) => Body::from_stream(r.bytes_stream()).into_response(),
+      Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("error: {}", e)).into_response(),
+    };
+
+    response
   }
 }
