@@ -5,6 +5,7 @@ use crate::engine::{
   llama::{
     LLAMA_DEFAULT_NPREDICT, LLAMA_DEFAULT_STREAM, LLAMA_DEFAULT_TEMPERATURE, LLAMA_DEFAULT_TOP_K,
     LLAMA_DEFAULT_TOP_P, LlamaCompletionMessage, LlamaCompletionRequest, LlamaEngine,
+    RerankRequest,
   },
   qdrant::{QDRANT_QUERY_DEFAULT_THRESHOLD, QdrantEngine, QdrantQuery},
 };
@@ -176,12 +177,12 @@ async fn api_completion(
 ) -> impl IntoResponse {
   log::debug!("[api_completion] payload is {:?}", payload);
 
-  get_rag_completion(st, payload).await
+  get_rag_completion(st, payload).await.into_response()
 }
 
 async fn get_rag_completion(state: RagApiState, req: CompletionRequest) -> impl IntoResponse {
   // get embeddings for prompt
-  let llama = state.llama.clone();
+  let llama = state.llama;
   let mut messages: Vec<LlamaCompletionMessage> = Vec::new();
 
   if state.qdrant.client.is_none() {
@@ -213,30 +214,53 @@ async fn get_rag_completion(state: RagApiState, req: CompletionRequest) -> impl 
     Ok(res) => {
       log::info!("qdrant::query_points yielded {:?}", res);
 
-      messages.push(
-        LlamaCompletionMessage::new()
-          .with_role("system")
-          .with_content(RAGAPI_LLM_SYSTEM_PROMPT),
-      );
+      // rerank the current result
+      // TODO: consider moving this logic to another method
+      log::info!("reranking vectordb result");
 
-      let mut context: String = String::new();
+      let rr = RerankRequest::new().with_query(&req.prompt);
+      let mut docs: Vec<String> = Vec::new();
       res.iter().for_each(|item| {
         if let Some(v) = item.payload["source"].as_str() {
-          context.push_str(v);
-          context.push_str("\n");
+          docs.push(v.to_owned());
         }
-        log::info!("inside foreach");
       });
 
-      let user_msg = format!(RAGAPI_LLM_USER_PROMPT!(), context, req.prompt);
-      messages.push(
-        LlamaCompletionMessage::new()
-          .with_role("user")
-          .with_content(&user_msg),
-      );
-    }
+      /*
+            match llama.rerank(rr).await {
+              Ok(_reranked) => {
+                // Content successfully reranked
+                // prepares messages
+                //
+                /*
+                          let mut context: String = String::new();
+
+                          reranked.iter().for_each(|doc| {
+                            context.push_str(doc);
+                            context.push('\n');
+                          });
+
+                          let user_msg = format!(RAGAPI_LLM_USER_PROMPT!(), context, req.prompt);
+                          messages.push(
+                            LlamaCompletionMessage::new()
+                              .with_role("user")
+                              .with_content(&user_msg),
+                          );
+                */
+              }
+              Err(e) => {
+                log::info!("rerank error: {}", e);
+                messages.push(
+                  LlamaCompletionMessage::new()
+                    .with_role("user")
+                    .with_content(&req.prompt),
+                );
+              }
+            }
+      */
+    } // Ok(qdrant::run)
     Err(e) => {
-      log::info!("qdrant yielded no results {}.", e);
+      log::info!("similarity search: {}.", e);
       messages.push(
         LlamaCompletionMessage::new()
           .with_role("user")
@@ -257,5 +281,5 @@ async fn get_rag_completion(state: RagApiState, req: CompletionRequest) -> impl 
 
   log::debug!("request llama with {:?}", lcr);
 
-  state.llama.get_completion(lcr).await.into_response()
+  llama.get_completion(lcr).await.into_response()
 }

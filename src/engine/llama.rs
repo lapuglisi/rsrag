@@ -14,6 +14,7 @@ pub const LLAMA_DEFAULT_NPREDICT: i32 = 512;
 pub const LLAMA_DEFAULT_TOP_K: u32 = 40;
 pub const LLAMA_DEFAULT_TOP_P: f32 = 0.9;
 pub const LLAMA_DEFAULT_STREAM: bool = false;
+const LLAMA_RERANK_DEFAULT_THRESHOLD: f32 = 0.8;
 
 #[derive(Serialize, Debug)]
 #[serde(default)]
@@ -152,6 +153,72 @@ struct LlamaEmbedResponse {
 }
 ////////////////////////////
 
+///
+/// Llama Rerank Request/Response
+///
+pub struct RerankRequest {
+  query: String,
+  documents: Vec<String>,
+  threshold: f32,
+}
+
+impl RerankRequest {
+  pub fn new() -> Self {
+    Self {
+      query: String::new(),
+      documents: Vec::new(),
+      threshold: LLAMA_RERANK_DEFAULT_THRESHOLD,
+    }
+  }
+
+  pub fn with_query(mut self, query: &str) -> Self {
+    self.query = query.to_string();
+    self
+  }
+
+  pub fn add_document(mut self, doc: &str) -> Self {
+    self.documents.push(doc.to_string());
+    self
+  }
+
+  pub fn add_documents(mut self, docs: Vec<String>) -> Self {
+    docs.iter().for_each(|doc| self.documents.push(doc.into()));
+    self
+  }
+
+  pub fn with_threshold(mut self, t: f32) -> Self {
+    self.threshold = t;
+    self
+  }
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+struct LlamaRerankRequest {
+  model: String,
+  query: String,
+  documents: Vec<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct LlamaRerankResponse {
+  model: String,
+  object: String,
+  usage: LlamaRerankResponseUsage,
+  results: Vec<LlamaRerankResponseResults>,
+}
+
+#[derive(Deserialize, Debug)]
+struct LlamaRerankResponseUsage {
+  prompt_tokens: u32,
+  total_tokens: u32,
+}
+
+#[derive(Deserialize, Debug)]
+struct LlamaRerankResponseResults {
+  index: i32,
+  relevance_score: f32,
+}
+
 #[derive(Clone, Default)]
 pub struct LlamaEngine {
   pub embed_server: String,
@@ -207,9 +274,60 @@ impl<'l> LlamaEngine {
     println!("rerank_model ..... {}", self.rerank_model);
   }
 
+  pub async fn rerank(
+    &self,
+    request: RerankRequest,
+  ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut documents: Vec<String> = Vec::new();
+    let url = format!("{}/v1/rerank", self.llama_server);
+    let rr = LlamaRerankRequest {
+      model: self.rerank_model.to_owned(),
+      query: request.query,
+      documents: request.documents.clone(),
+    };
+
+    let json = serde_json::to_string(&rr)?;
+
+    log::info!("rerank: sending {} to {}", json, url);
+
+    let client = Client::new()
+      .post(url)
+      .header("Content-Type", "application/json")
+      .body(json)
+      .send()
+      .await?;
+
+    let body = client.text().await?;
+    let resp: LlamaRerankResponse = serde_json::from_str(&body)?;
+
+    resp.results.iter().for_each(|result| {
+      // Check for relevance_score against threshold
+      log::info!(
+        "testing document {}: {} <-> {}",
+        result.index,
+        result.relevance_score,
+        request.threshold
+      );
+      if result.relevance_score >= request.threshold {
+        log::info!("got document {}", result.index);
+
+        // Now get the original 'documents' item at 'index'
+        if let Some(doc) = request.documents.get(result.index as usize) {
+          documents.push(doc.to_owned());
+        }
+      }
+    });
+
+    if documents.len() > 0 {
+      Ok(documents)
+    } else {
+      Err("no results found")?
+    }
+  }
+
   // Endpoints implementation
   pub async fn get_embeddings(
-    self,
+    &self,
     input: &str,
   ) -> Result<crate::api::EmbedResponse, Box<dyn std::error::Error>> {
     let url = format!("{}/v1/embeddings", self.embed_server);
@@ -243,7 +361,7 @@ impl<'l> LlamaEngine {
     Ok(embed)
   }
 
-  pub async fn get_completion(self, request: LlamaCompletionRequest) -> impl IntoResponse {
+  pub async fn get_completion(&self, request: LlamaCompletionRequest) -> impl IntoResponse {
     let url = format!("{}/v1/chat/completions", self.llama_server);
 
     log::info!("send {:?} to {}", request, url);

@@ -1,5 +1,3 @@
-use std::default;
-
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{CollectionExistsRequest, Query, QueryPointsBuilder, ScoredPoint};
 
