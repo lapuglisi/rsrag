@@ -12,23 +12,30 @@ mod engine;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let args: Vec<String> = env::args().collect();
   let mut config_file: Option<String> = None;
+  let mut log_level: LevelFilter = LevelFilter::Info;
 
   let mut iter = args.iter();
   while let Some(arg) = iter.next() {
     println!("inside while: arg is {}", arg);
-    if arg == "--config" {
-      config_file = iter.next().map(|a| a.to_string());
-      break;
+    match arg.as_str() {
+      "--config" | "-c" => {
+        config_file = iter.next().map(|a| a.to_string());
+      }
+      "--debug" | "-d" => {
+        log_level = LevelFilter::Debug;
+      }
+      _ => {
+        eprintln!("unknown arg: {}", arg);
+      }
     }
   }
 
   let settings: RagConfig = crate::config::RagConfig::load(config_file)?;
 
-  let log_level = if settings.log_debug {
-    LevelFilter::Debug
-  } else {
-    LevelFilter::Info
-  };
+  if settings.log_debug {
+    println!("using Debug log_level defined in settings.");
+    log_level = LevelFilter::Debug
+  }
   let log_file = settings.log_file.to_owned();
 
   println!("using log file '{}'.", log_file);

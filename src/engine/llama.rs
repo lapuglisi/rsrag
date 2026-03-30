@@ -1,8 +1,9 @@
+#![allow(unused)]
 use axum::{body::Body, response::IntoResponse};
 use http::StatusCode;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{error::Error, time::Duration};
+use std::time::Duration;
 
 //
 // Llama completion
@@ -13,7 +14,7 @@ pub const LLAMA_DEFAULT_NPREDICT: i32 = 512;
 pub const LLAMA_DEFAULT_TOP_K: u32 = 40;
 pub const LLAMA_DEFAULT_TOP_P: f32 = 0.9;
 pub const LLAMA_DEFAULT_STREAM: bool = false;
-const LLAMA_RERANK_DEFAULT_THRESHOLD: f32 = 0.8;
+pub const LLAMA_RERANK_DEFAULT_THRESHOLD: f32 = 0.8;
 
 #[derive(Serialize, Debug)]
 #[serde(default)]
@@ -51,6 +52,7 @@ impl LlamaCompletionRequest {
     self
   }
 
+  #[allow(unused)]
   pub fn add_message(mut self, msg: LlamaCompletionMessage) -> Self {
     self.messages.push(msg);
     self
@@ -279,7 +281,7 @@ impl<'l> LlamaEngine {
 
     let json = serde_json::to_string(&rr)?;
 
-    log::info!("rerank: sending {} to {}", json, url);
+    log::debug!("rerank: sending {} to {}", json, url);
 
     let client = Client::new()
       .post(url)
@@ -289,7 +291,7 @@ impl<'l> LlamaEngine {
       .await?;
 
     let body = client.text().await?;
-    log::info!("got rerank body: {}", body);
+    log::debug!("got rerank body: {}", body);
 
     let resp: LlamaRerankResponse = serde_json::from_str(&body)?;
 
@@ -330,8 +332,8 @@ impl<'l> LlamaEngine {
 
     let json = serde_json::to_string(&er)?;
 
-    log::info!("sending request to {}", url);
-    log::info!("json is {}", json);
+    log::debug!("sending request to {}", url);
+    log::debug!("json is {}", json);
 
     let client = Client::new()
       .post(url)
@@ -357,7 +359,7 @@ impl<'l> LlamaEngine {
   pub async fn get_completion(&self, request: LlamaCompletionRequest) -> impl IntoResponse {
     let url = format!("{}/v1/chat/completions", self.llama_server);
 
-    log::info!("send {:?} to {}", request, url);
+    log::debug!("send {:?} to {}", request, url);
 
     let json = serde_json::to_string(&request).expect("lascou");
 
@@ -368,10 +370,7 @@ impl<'l> LlamaEngine {
       .send()
       .await
     {
-      Ok(r) => {
-        log::info!("got response {:?}", r);
-        Body::from_stream(r.bytes_stream()).into_response()
-      }
+      Ok(r) => Body::from_stream(r.bytes_stream()).into_response(),
       Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("error: {}", e)).into_response(),
     }
   }

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::engine::{
   llama::{
     LLAMA_DEFAULT_NPREDICT, LLAMA_DEFAULT_STREAM, LLAMA_DEFAULT_TEMPERATURE, LLAMA_DEFAULT_TOP_K,
-    LLAMA_DEFAULT_TOP_P, LlamaCompletionMessage, LlamaCompletionRequest, LlamaEngine,
-    RerankRequest,
+    LLAMA_DEFAULT_TOP_P, LLAMA_RERANK_DEFAULT_THRESHOLD, LlamaCompletionMessage,
+    LlamaCompletionRequest, LlamaEngine, RerankRequest,
   },
   qdrant::{QDRANT_QUERY_DEFAULT_THRESHOLD, QdrantEngine, QdrantQuery},
 };
@@ -49,7 +49,7 @@ pub struct CompletionRequest {
   pub top_k: Option<u32>,
   pub top_p: Option<f32>,
   pub threshold: Option<f32>,
-  pub rerank_model: Option<String>,
+  pub rerank: Option<CompletionRequestRerank>,
 }
 
 impl Default for CompletionRequest {
@@ -63,7 +63,23 @@ impl Default for CompletionRequest {
       top_k: Some(LLAMA_DEFAULT_TOP_K),
       top_p: Some(LLAMA_DEFAULT_TOP_P),
       threshold: Some(QDRANT_QUERY_DEFAULT_THRESHOLD),
-      rerank_model: None,
+      rerank: None,
+    }
+  }
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(default)]
+pub struct CompletionRequestRerank {
+  model: String,
+  threshold: Option<f32>,
+}
+
+impl Default for CompletionRequestRerank {
+  fn default() -> Self {
+    Self {
+      model: String::new(),
+      threshold: Some(LLAMA_RERANK_DEFAULT_THRESHOLD),
     }
   }
 }
@@ -231,24 +247,27 @@ async fn api_completion(
         })
         .collect();
 
-      let context = if payload.rerank_model.is_some() {
-        log::info!("reranking vectordb results");
+      let context = if payload.rerank.is_some() {
+        let rerank = payload.rerank.unwrap();
+
+        log::info!("reranking vectordb results...");
 
         let rr = RerankRequest::new()
           .with_query(&payload.prompt)
-          .with_rerank_model(payload.rerank_model.unwrap())
+          .with_rerank_model(rerank.model)
+          .with_threshold(rerank.threshold.unwrap())
           .add_documents(&docs);
 
         match llama.rerank(rr).await {
           Ok(r) => r,
           Err(e) => {
             log::warn!("could not rerank results: {}", e);
-            // Use initial documents as
+            // Use initial documents as context
             docs
           }
         }
       } else {
-        log::info!("not reranking qdrant result: no rerank_model defined.");
+        log::info!("not reranking qdrant result: no rerank config provided.");
         docs
       };
 
@@ -290,7 +309,7 @@ async fn api_completion(
     .stream(payload.stream)
     .append_messages(messages);
 
-  log::info!("request llama with {:?}", lcr);
+  log::debug!("request llama with {:?}", lcr);
 
   llama.get_completion(lcr).await.into_response()
 }
