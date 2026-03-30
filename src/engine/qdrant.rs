@@ -23,12 +23,12 @@ impl Default for QdrantQuery {
 }
 
 impl QdrantQuery {
-  pub fn new(engine: QdrantEngine) -> Self {
+  pub fn new(engine: &QdrantEngine) -> Self {
     Self::default().with_qdrant(engine)
   }
 
-  fn with_qdrant(mut self, q: QdrantEngine) -> Self {
-    self.qdrant = Some(q);
+  fn with_qdrant(mut self, q: &QdrantEngine) -> Self {
+    self.qdrant = Some(q.to_owned());
     self
   }
 
@@ -47,7 +47,9 @@ impl QdrantQuery {
     self
   }
 
-  pub async fn run(self) -> Result<Vec<ScoredPoint>, Box<dyn std::error::Error>> {
+  pub async fn run(
+    self,
+  ) -> Result<Vec<ScoredPoint>, Box<dyn std::error::Error + Send + Sync + 'static>> {
     let qdrant = self.qdrant.ok_or_else(|| "qdrant engine not initialized")?;
     let client = qdrant
       .client
@@ -64,7 +66,7 @@ impl QdrantQuery {
 
     if !has_col {
       log::error!("qdrant: collection {} does not exist!", collection);
-      return Err("asdasd")?;
+      return Err(format!("qdrant: collection {} does not exist", collection))?;
     }
 
     let mut qp = QueryPointsBuilder::new(collection)
@@ -80,7 +82,7 @@ impl QdrantQuery {
       Ok(v) => v,
       Err(e) => {
         log::error!("qdrant: error {}", e);
-        return Err("asdasd")?;
+        return Err(e)?;
       }
     };
 

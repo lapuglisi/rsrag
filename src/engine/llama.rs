@@ -1,9 +1,8 @@
 use axum::{body::Body, response::IntoResponse};
-use futures_util::Stream;
 use http::StatusCode;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{error::Error, time::Duration};
 
 //
 // Llama completion
@@ -156,10 +155,12 @@ struct LlamaEmbedResponse {
 ///
 /// Llama Rerank Request/Response
 ///
+#[derive(Debug)]
 pub struct RerankRequest {
   query: String,
   documents: Vec<String>,
   threshold: f32,
+  model: Option<String>,
 }
 
 impl RerankRequest {
@@ -168,6 +169,7 @@ impl RerankRequest {
       query: String::new(),
       documents: Vec::new(),
       threshold: LLAMA_RERANK_DEFAULT_THRESHOLD,
+      model: None,
     }
   }
 
@@ -181,13 +183,18 @@ impl RerankRequest {
     self
   }
 
-  pub fn add_documents(mut self, docs: Vec<String>) -> Self {
+  pub fn add_documents(mut self, docs: &Vec<String>) -> Self {
     docs.iter().for_each(|doc| self.documents.push(doc.into()));
     self
   }
 
   pub fn with_threshold(mut self, t: f32) -> Self {
     self.threshold = t;
+    self
+  }
+
+  pub fn with_rerank_model(mut self, m: String) -> Self {
+    self.model = Some(m);
     self
   }
 }
@@ -224,9 +231,6 @@ pub struct LlamaEngine {
   pub embed_server: String,
   pub llama_server: String,
   pub rerank_server: String,
-  pub chat_model: String,
-  pub embed_model: String,
-  pub rerank_model: String,
 }
 
 impl<'l> LlamaEngine {
@@ -249,39 +253,26 @@ impl<'l> LlamaEngine {
     self
   }
 
-  pub fn with_chat_model(mut self, s: &str) -> Self {
-    self.chat_model = s.into();
-    self
-  }
-
-  pub fn with_embed_model(mut self, s: &str) -> Self {
-    self.embed_model = s.into();
-    self
-  }
-
-  pub fn with_rerank_model(mut self, s: &str) -> Self {
-    self.rerank_model = s.into();
-    self
-  }
-
+  #[allow(unused)]
   pub fn print(self) {
     println!("--- LlamaEngine ---");
     println!("embed_server ..... {}", self.embed_server);
     println!("llama_server ..... {}", self.llama_server);
     println!("rerank_server .... {}", self.rerank_server);
-    println!("chat_model ....... {}", self.chat_model);
-    println!("embed_model ...... {}", self.embed_model);
-    println!("rerank_model ..... {}", self.rerank_model);
   }
 
   pub async fn rerank(
     &self,
     request: RerankRequest,
-  ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+  ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    if request.model.is_none() {
+      Err("no rerank model defined...")?
+    }
+
     let mut documents: Vec<String> = Vec::new();
     let url = format!("{}/v1/rerank", self.llama_server);
     let rr = LlamaRerankRequest {
-      model: self.rerank_model.to_owned(),
+      model: request.model.unwrap(),
       query: request.query,
       documents: request.documents.clone(),
     };
@@ -298,6 +289,8 @@ impl<'l> LlamaEngine {
       .await?;
 
     let body = client.text().await?;
+    log::info!("got rerank body: {}", body);
+
     let resp: LlamaRerankResponse = serde_json::from_str(&body)?;
 
     resp.results.iter().for_each(|result| {
@@ -318,11 +311,11 @@ impl<'l> LlamaEngine {
       }
     });
 
-    if documents.len() > 0 {
+    return if documents.len() > 0 {
       Ok(documents)
     } else {
-      Err("no results found")?
-    }
+      Err("no possible reranking")?
+    };
   }
 
   // Endpoints implementation
@@ -366,15 +359,20 @@ impl<'l> LlamaEngine {
 
     log::info!("send {:?} to {}", request, url);
 
-    let json = serde_json::to_string(&request).unwrap_or(String::new());
+    let json = serde_json::to_string(&request).expect("lascou");
 
-    let client = Client::new().post(url).body(json).send().await;
-
-    let response = match client {
-      Ok(r) => Body::from_stream(r.bytes_stream()).into_response(),
+    match Client::new()
+      .post(url)
+      .header("Content-Type", "application/json")
+      .body(json)
+      .send()
+      .await
+    {
+      Ok(r) => {
+        log::info!("got response {:?}", r);
+        Body::from_stream(r.bytes_stream()).into_response()
+      }
       Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("error: {}", e)).into_response(),
-    };
-
-    response
+    }
   }
 }

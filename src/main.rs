@@ -2,6 +2,7 @@ use crate::engine::llama::LlamaEngine;
 use crate::{config::RagConfig, engine::qdrant::QdrantEngine};
 
 use log::LevelFilter;
+use std::env;
 
 mod api;
 mod config;
@@ -9,7 +10,19 @@ mod engine;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let settings: RagConfig = crate::config::RagConfig::load(None)?;
+  let args: Vec<String> = env::args().collect();
+  let mut config_file: Option<String> = None;
+
+  let mut iter = args.iter();
+  while let Some(arg) = iter.next() {
+    println!("inside while: arg is {}", arg);
+    if arg == "--config" {
+      config_file = iter.next().map(|a| a.to_string());
+      break;
+    }
+  }
+
+  let settings: RagConfig = crate::config::RagConfig::load(config_file)?;
 
   let log_level = if settings.log_debug {
     LevelFilter::Debug

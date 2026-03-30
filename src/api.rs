@@ -1,5 +1,10 @@
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{
+  Json, Router, extract::State, handler::Handler, http::StatusCode, response::IntoResponse,
+  routing::post,
+};
+use futures_util::{FutureExt, TryFutureExt};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::engine::{
   llama::{
@@ -33,7 +38,7 @@ pub struct EmbedResponse {
   pub embeddings: Vec<f32>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct CompletionRequest {
   pub model: String,
@@ -44,6 +49,7 @@ pub struct CompletionRequest {
   pub top_k: Option<u32>,
   pub top_p: Option<f32>,
   pub threshold: Option<f32>,
+  pub rerank_model: Option<String>,
 }
 
 impl Default for CompletionRequest {
@@ -57,14 +63,15 @@ impl Default for CompletionRequest {
       top_k: Some(LLAMA_DEFAULT_TOP_K),
       top_p: Some(LLAMA_DEFAULT_TOP_P),
       threshold: Some(QDRANT_QUERY_DEFAULT_THRESHOLD),
+      rerank_model: None,
     }
   }
 }
 
 #[derive(Clone)]
 pub struct RagApiState {
-  llama: LlamaEngine,
-  qdrant: QdrantEngine,
+  llama: Arc<LlamaEngine>,
+  qdrant: Arc<QdrantEngine>,
 }
 
 pub struct RagApi<'r> {
@@ -114,8 +121,8 @@ impl<'r> RagApi<'r> {
     }
 
     let st = RagApiState {
-      llama: self.llama.unwrap(),
-      qdrant: self.qdrant.unwrap(),
+      llama: Arc::new(self.llama.unwrap()),
+      qdrant: Arc::new(self.qdrant.unwrap()),
     };
 
     let app: Router = Router::new()
@@ -151,6 +158,7 @@ fn get_qdrant_colletion(model: &str) -> String {
     .collect()
 }
 
+#[axum::debug_handler]
 async fn api_embeddings(
   State(st): State<RagApiState>,
   Json(payload): Json<EmbedRequest>,
@@ -171,32 +179,30 @@ async fn api_embeddings(
   resp.into_response()
 }
 
+#[axum::debug_handler]
 async fn api_completion(
   State(st): State<RagApiState>,
   Json(payload): Json<CompletionRequest>,
 ) -> impl IntoResponse {
-  log::debug!("[api_completion] payload is {:?}", payload);
+  log::info!("[api_completion] payload is {:?}", payload);
 
-  get_rag_completion(st, payload).await.into_response()
-}
-
-async fn get_rag_completion(state: RagApiState, req: CompletionRequest) -> impl IntoResponse {
   // get embeddings for prompt
-  let llama = state.llama;
+  let llama = st.llama;
+  let qdrant = st.qdrant;
   let mut messages: Vec<LlamaCompletionMessage> = Vec::new();
 
-  if state.qdrant.client.is_none() {
+  if qdrant.client.is_none() {
     return (
       StatusCode::INTERNAL_SERVER_ERROR,
-      String::from("no qdrant client confifured"),
+      "qdrant client unitialized",
     )
       .into_response();
   }
 
-  let er: EmbedResponse = match llama.get_embeddings(&req.prompt).await {
+  let er: EmbedResponse = match llama.get_embeddings(&payload.prompt).await {
     Ok(v) => v,
     Err(e) => {
-      return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response();
+      return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
   };
 
@@ -204,82 +210,87 @@ async fn get_rag_completion(state: RagApiState, req: CompletionRequest) -> impl 
   let collection: String = get_qdrant_colletion(&er.model);
   log::info!("using qdrant collection {}", &collection);
 
-  match QdrantQuery::new(state.qdrant)
+  match QdrantQuery::new(&qdrant)
     .with_collection(collection)
     .with_embeddings(er.embeddings)
-    .with_threshold(req.threshold.unwrap())
+    .with_threshold(payload.threshold.unwrap())
     .run()
     .await
   {
     Ok(res) => {
-      log::info!("qdrant::query_points yielded {:?}", res);
+      log::debug!("qdrant::query_points yielded {:?}", res);
 
-      // rerank the current result
-      // TODO: consider moving this logic to another method
-      log::info!("reranking vectordb result");
+      let docs: Vec<String> = res
+        .iter()
+        .filter_map(|item| {
+          if let Some(v) = item.payload["source"].as_str() {
+            Some(v.to_string())
+          } else {
+            None
+          }
+        })
+        .collect();
 
-      let rr = RerankRequest::new().with_query(&req.prompt);
-      let mut docs: Vec<String> = Vec::new();
-      res.iter().for_each(|item| {
-        if let Some(v) = item.payload["source"].as_str() {
-          docs.push(v.to_owned());
+      let context = if payload.rerank_model.is_some() {
+        log::info!("reranking vectordb results");
+
+        let rr = RerankRequest::new()
+          .with_query(&payload.prompt)
+          .with_rerank_model(payload.rerank_model.unwrap())
+          .add_documents(&docs);
+
+        match llama.rerank(rr).await {
+          Ok(r) => r,
+          Err(e) => {
+            log::warn!("could not rerank results: {}", e);
+            // Use initial documents as
+            docs
+          }
         }
-      });
+      } else {
+        log::info!("not reranking qdrant result: no rerank_model defined.");
+        docs
+      };
 
-      /*
-            match llama.rerank(rr).await {
-              Ok(_reranked) => {
-                // Content successfully reranked
-                // prepares messages
-                //
-                /*
-                          let mut context: String = String::new();
+      let user_msg = format!(
+        RAGAPI_LLM_USER_PROMPT!(),
+        context.join("\n"),
+        payload.prompt
+      );
 
-                          reranked.iter().for_each(|doc| {
-                            context.push_str(doc);
-                            context.push('\n');
-                          });
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("system")
+          .with_content(RAGAPI_LLM_SYSTEM_PROMPT),
+      );
 
-                          let user_msg = format!(RAGAPI_LLM_USER_PROMPT!(), context, req.prompt);
-                          messages.push(
-                            LlamaCompletionMessage::new()
-                              .with_role("user")
-                              .with_content(&user_msg),
-                          );
-                */
-              }
-              Err(e) => {
-                log::info!("rerank error: {}", e);
-                messages.push(
-                  LlamaCompletionMessage::new()
-                    .with_role("user")
-                    .with_content(&req.prompt),
-                );
-              }
-            }
-      */
-    } // Ok(qdrant::run)
-    Err(e) => {
-      log::info!("similarity search: {}.", e);
       messages.push(
         LlamaCompletionMessage::new()
           .with_role("user")
-          .with_content(&req.prompt),
+          .with_content(&user_msg),
+      );
+    }
+    Err(e) => {
+      log::warn!("similarity search: {}", e);
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("user")
+          .with_content(&payload.prompt),
       );
     }
   }
 
   // Prepare a completion request
   let lcr = LlamaCompletionRequest::new()
-    .with_model(&req.model)
-    .with_temperature(req.temperature)
-    .with_top_k(req.top_k)
-    .with_top_p(req.top_p)
-    .with_n_predict(req.n_predict)
-    .stream(req.stream)
+    .with_model(&payload.model)
+    .with_temperature(payload.temperature)
+    .with_top_k(payload.top_k)
+    .with_top_p(payload.top_p)
+    .with_n_predict(payload.n_predict)
+    .stream(payload.stream)
     .append_messages(messages);
 
-  log::debug!("request llama with {:?}", lcr);
+  log::info!("request llama with {:?}", lcr);
 
   llama.get_completion(lcr).await.into_response()
 }
