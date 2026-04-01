@@ -8,7 +8,7 @@ const RAGAPI_DEFAULT_PORT: u16 = 9091;
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct RagConfig {
-  pub log_file: String,
+  pub log_file: Option<String>,
   pub log_debug: bool,
   pub http: HttpConfig,
   pub llama: LlamaConfig,
@@ -18,7 +18,7 @@ pub struct RagConfig {
 impl Default for RagConfig {
   fn default() -> Self {
     Self {
-      log_file: String::from("./rsrag.log"),
+      log_file: None,
       log_debug: false,
       http: HttpConfig::default(),
       llama: LlamaConfig::default(),

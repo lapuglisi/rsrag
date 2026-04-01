@@ -281,7 +281,7 @@ impl<'l> LlamaEngine {
 
     let json = serde_json::to_string(&rr)?;
 
-    log::debug!("rerank: sending {} to {}", json, url);
+    log::info!("rerank: sending {} to {}", json, url);
 
     let client = Client::new()
       .post(url)
@@ -316,7 +316,10 @@ impl<'l> LlamaEngine {
     return if documents.len() > 0 {
       Ok(documents)
     } else {
-      Err("no possible reranking")?
+      Err(format!(
+        "no suitable reranking for threshold {}",
+        request.threshold
+      ))?
     };
   }
 

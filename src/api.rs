@@ -1,8 +1,5 @@
-use axum::{
-  Json, Router, extract::State, handler::Handler, http::StatusCode, response::IntoResponse,
-  routing::post,
-};
-use futures_util::{FutureExt, TryFutureExt};
+#![allow(dead_code)]
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -218,7 +215,11 @@ async fn api_completion(
   let er: EmbedResponse = match llama.get_embeddings(&payload.prompt).await {
     Ok(v) => v,
     Err(e) => {
-      return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+      log::warn!("could not retrieve embeddings: {}", e);
+      EmbedResponse {
+        model: "none".to_string(),
+        embeddings: Vec::new(),
+      }
     }
   };
 
@@ -258,6 +259,8 @@ async fn api_completion(
           .with_threshold(rerank.threshold.unwrap())
           .add_documents(&docs);
 
+        log::debug!("rerank request: {:?}", rr);
+
         match llama.rerank(rr).await {
           Ok(r) => r,
           Err(e) => {
@@ -267,7 +270,7 @@ async fn api_completion(
           }
         }
       } else {
-        log::info!("not reranking qdrant result: no rerank config provided.");
+        log::warn!("not reranking qdrant result: no rerank config provided.");
         docs
       };
 

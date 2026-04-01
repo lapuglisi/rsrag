@@ -36,16 +36,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("using Debug log_level defined in settings.");
     log_level = LevelFilter::Debug
   }
-  let log_file = settings.log_file.to_owned();
 
-  println!("using log file '{}'.", log_file);
+  if settings.log_file.is_some() {
+    let log_file = settings.log_file.as_ref().unwrap();
+    println!("using log file '{}'.", log_file);
 
-  match simple_logging::log_to_file(&log_file, log_level) {
-    Ok(_) => {}
-    Err(e) => {
-      eprintln!("could not create log file '{}': {}", log_file, e);
+    if let Err(_) = simple_logging::log_to_file(log_file, log_level) {
+      eprintln!(
+        "could not use log file '{}': logging to stderr instead.",
+        log_file
+      );
       simple_logging::log_to_stderr(log_level);
     }
+  } else {
+    eprintln!("no log file provided; logging to stderr");
+    simple_logging::log_to_stderr(log_level);
   }
 
   log::info!("got settings: {:?}", settings);

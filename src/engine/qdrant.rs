@@ -57,14 +57,13 @@ impl QdrantQuery {
     let collection = self.collection.ok_or_else(|| "no collection defined")?;
     let embeddings = self.embeddings.ok_or_else(|| "no embeddings provided")?;
 
-    let has_col = client
+    if !client
       .collection_exists(CollectionExistsRequest {
         collection_name: String::from(&collection),
       })
       .await
-      .unwrap_or(false);
-
-    if !has_col {
+      .unwrap_or(false)
+    {
       log::error!("qdrant: collection {} does not exist!", collection);
       return Err(format!("qdrant: collection {} does not exist", collection))?;
     }
@@ -75,11 +74,15 @@ impl QdrantQuery {
       .score_threshold(self.threshold);
 
     if qdrant.limit > 0 {
+      log::info!("qdrant search: using limit {}", qdrant.limit);
       qp = qp.limit(qdrant.limit);
     }
 
     let res = match client.query(qp).await {
-      Ok(v) => v,
+      Ok(v) => {
+        log::info!("got qdrant result: {:?}", v);
+        v
+      }
       Err(e) => {
         log::error!("qdrant: error {}", e);
         return Err(e)?;
@@ -89,7 +92,7 @@ impl QdrantQuery {
     if res.result.len() > 0 {
       Ok(res.result)
     } else {
-      Err("qdrant query yielded no points")?
+      Err("query yielded no points")?
     }
   }
 }
