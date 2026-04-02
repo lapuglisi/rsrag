@@ -1,14 +1,17 @@
 #![allow(unused)]
 
 use async_stream::stream;
-use futures_util::stream::{self, Stream};
+use futures_util::{
+  StreamExt,
+  stream::{self, Stream},
+};
 use qdrant_client::{
   Payload, Qdrant,
   qdrant::{PointStruct, UpsertPoints, UpsertPointsBuilder},
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{env, error::Error};
+use std::{env, error::Error, pin};
 
 const DEFAULT_EMBED_SERVER: &str = "http://192.120.100.20:8888";
 const DEFAULT_QDRANT_SERVER: &str = "http://192.120.100.20:6334";
@@ -144,19 +147,20 @@ impl RaggerEngine {
   }
 
   // TODO: chunk document
-  async fn do_the_chunk(self, content: String) -> impl Stream<Item = Option<String>> {
+  async fn do_the_chunk(&self, content: &str) -> impl Stream<Item = String> {
     stream! {
-      let delims = self.delimiters;
+      let delims = self.delimiters.clone();
       let bytes = content.as_bytes();
       let chunks: Vec<&[u8]> = chunk::chunk(bytes)
         .delimiters(delims.as_bytes())
         .size(self.chunk_size)
         .collect();
 
-      for c in chunks {
+      let mut iter = chunks.iter();
+      while let Some(c) = iter.next() {
         match str::from_utf8(c) {
           Ok(s) => {
-            yield Some(s.to_string());
+            yield s.to_string();
           }
           Err(e) => {
             eprintln!("invalid UTF-8 buffer: {}", e);
@@ -239,24 +243,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
   // TODO: check endpoints health
   for input in content {
-    println!("getting embeddings for '{}'...", input);
-    let er = engine.get_embeddings(&input).await?;
+    let chunks = engine.do_the_chunk(&input).await;
+    tokio::pin!(chunks);
 
-    let collection: String = er
-      .model
-      .chars()
-      .map(|c| if c.is_ascii_punctuation() { '-' } else { c })
-      .collect();
+    while let Some(chunk) = chunks.next().await {
+      println!("getting embeddings for '{:?}'...", chunk);
+      let er = engine.get_embeddings(&chunk).await?;
 
-    for item in er.data.iter() {
-      let qu = QdrantUpserter {
-        collection: collection.to_owned(),
-        document: source.to_owned(),
-        source: input.to_owned(),
-        embeddings: item.embedding.clone(),
-      };
+      let collection: String = er
+        .model
+        .chars()
+        .map(|c| if c.is_ascii_punctuation() { '-' } else { c })
+        .collect();
 
-      engine.save_to_qdrant(qu).await?;
+      for item in er.data.iter() {
+        let qu = QdrantUpserter {
+          collection: collection.to_owned(),
+          document: source.to_owned(),
+          source: input.to_owned(),
+          embeddings: item.embedding.clone(),
+        };
+
+        engine.save_to_qdrant(qu).await?;
+      }
     }
   }
 
