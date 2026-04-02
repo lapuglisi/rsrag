@@ -3,7 +3,12 @@ name = "rsrag"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "rsragger"
+path = "src/rsragger/main.rs"
+
 [dependencies]
+async-stream = "0.3.6"
 axum = { version = "0.8.8", features = ["macros"] }
 config = { version = "0.15.22", features = ["toml"] }
 futures-util = "0.3.32"
