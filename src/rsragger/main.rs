@@ -2,22 +2,24 @@
 
 use async_stream::stream;
 use futures_util::stream::{self, Stream};
-use qdrant_client::Payload;
-use qdrant_client::config::QdrantConfig;
-use qdrant_client::qdrant::points_update_operation::PointStructList;
-use qdrant_client::qdrant::{PointStruct, UpsertPointsBuilder};
-use qdrant_client::{Qdrant, qdrant::UpsertPoints};
+use qdrant_client::{
+  Payload, Qdrant,
+  qdrant::{PointStruct, UpsertPoints, UpsertPointsBuilder},
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
-use std::{env, io};
+use std::{env, error::Error};
 
 const DEFAULT_EMBED_SERVER: &str = "http://192.120.100.20:8888";
 const DEFAULT_QDRANT_SERVER: &str = "http://192.120.100.20:6334";
+const DEFAULT_CHUNK_DELIMS: &str = ".!?\n";
 
 struct RaggerEngine {
   embed_server: String,
   qdrant_server: String,
+  source: Option<String>,
+  chunk_size: usize,
+  delimiters: String,
 }
 
 //
@@ -55,6 +57,9 @@ impl RaggerEngine {
     Self {
       embed_server: DEFAULT_EMBED_SERVER.to_string(),
       qdrant_server: DEFAULT_QDRANT_SERVER.to_string(),
+      source: None,
+      chunk_size: 4096,
+      delimiters: DEFAULT_CHUNK_DELIMS.to_string(),
     }
   }
 
@@ -68,6 +73,26 @@ impl RaggerEngine {
     self
   }
 
+  fn read_file(&self, file: std::path::PathBuf) -> Result<Vec<String>, Box<dyn Error>> {
+    let mime = mime_guess::from_path(&file).first_or_text_plain();
+    let s = file.to_string_lossy();
+    let mut data: Vec<String> = Vec::new();
+
+    match mime {
+      m if m == mime_guess::mime::APPLICATION_PDF => {
+        println!("reading a pdf file: {}", s);
+        data = pdf_extract::extract_text_by_pages(file)?;
+      }
+      _ => {
+        println!("reading text file: {}", s);
+        let buf = std::fs::read_to_string(file)?;
+        data.push(buf);
+      }
+    }
+
+    Ok(data)
+  }
+
   async fn get_embeddings(&self, input: &str) -> Result<EmbedResponse, Box<dyn Error>> {
     let url = format!("{}/v1/embeddings", self.embed_server);
 
@@ -79,9 +104,13 @@ impl RaggerEngine {
     let client = Client::new().post(url).body(json).send().await?;
 
     let body = client.text().await?;
-    let resp: EmbedResponse = serde_json::from_str(&body)?;
-
-    Ok(resp)
+    match serde_json::from_str(&body) {
+      Ok(r) => Ok(r),
+      Err(e) => {
+        eprintln!("embeddings error: {} {}", e, body);
+        Err(e)?
+      }
+    }
   }
 
   async fn save_to_qdrant(&self, data: QdrantUpserter) -> Result<(), Box<dyn Error>> {
@@ -94,15 +123,47 @@ impl RaggerEngine {
     payload.insert("document", data.document);
 
     let point = PointStruct::new(point_id, data.embeddings, payload);
-    eprintln!("about to upsert {:?} into {}", point, data.collection);
+    println!("about to upsert {:?} into {}", point.id, data.collection);
 
     let up = UpsertPointsBuilder::new(&data.collection, vec![point]).build();
 
     let resp = qdrant.upsert_points(up).await?;
 
-    eprintln!("got qdrant response: {:?}", resp);
+    if resp.result.is_some() {
+      let result = resp.result.unwrap();
+      println!(
+        "got qdrant result: [{}, {}]",
+        result.operation_id.unwrap_or_default(),
+        result.status
+      );
+    } else {
+      println!("got qdrant response: {:?}", resp);
+    }
 
     Ok(())
+  }
+
+  // TODO: chunk document
+  async fn do_the_chunk(self, content: String) -> impl Stream<Item = Option<String>> {
+    stream! {
+      let delims = self.delimiters;
+      let bytes = content.as_bytes();
+      let chunks: Vec<&[u8]> = chunk::chunk(bytes)
+        .delimiters(delims.as_bytes())
+        .size(self.chunk_size)
+        .collect();
+
+      for c in chunks {
+        match str::from_utf8(c) {
+          Ok(s) => {
+            yield Some(s.to_string());
+          }
+          Err(e) => {
+            eprintln!("invalid UTF-8 buffer: {}", e);
+          }
+        }
+      }
+    }
   }
 }
 
@@ -133,6 +194,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
           engine = engine.with_embed_server(e);
         }
       }
+      "--source" | "-s" => {
+        if let Some(s) = iter.next() {
+          engine.source = Some(s);
+        }
+      }
+      "--chunk" => {
+        if let Some(c) = iter.next() {
+          if let Ok(i) = c.parse::<usize>() {
+            engine.chunk_size = i;
+          }
+        }
+      }
+      "--delimiters" | "--delims" | "-d" => {
+        if let Some(d) = iter.next() {
+          engine.delimiters = d;
+        }
+      }
       _ => {}
     }
   }
@@ -141,43 +219,46 @@ async fn main() -> Result<(), Box<dyn Error>> {
   println!("using:");
   println!("engine.embed_server ...... {}", engine.embed_server);
   println!("engine.qdrant_server ..... {}", engine.qdrant_server);
+  println!("engine.source ............ {:?}", engine.source);
+  println!("engine.chunk_size ........ {}", engine.chunk_size);
+  println!("engine.delimiters ........ {:?}", engine.delimiters);
   println!();
 
+  if engine.source.is_none() {
+    Err("--source is mandatory.")?
+  }
+
+  let source = engine.source.to_owned().unwrap();
+  let mut content: Vec<String> = Vec::new();
+
+  if std::fs::exists(&source).unwrap_or(false) {
+    content = engine.read_file(std::path::PathBuf::from(&source))?;
+  } else {
+    content.push(source.clone());
+  }
+
   // TODO: check endpoints health
-  let input = "Busco sexo com alegria e satisfação.";
-  let er = engine.get_embeddings(input).await?;
+  for input in content {
+    println!("getting embeddings for '{}'...", input);
+    let er = engine.get_embeddings(&input).await?;
 
-  let collection: String = er
-    .model
-    .chars()
-    .map(|c| if c.is_ascii_punctuation() { '-' } else { c })
-    .collect();
+    let collection: String = er
+      .model
+      .chars()
+      .map(|c| if c.is_ascii_punctuation() { '-' } else { c })
+      .collect();
 
-  for item in er.data.iter() {
-    let qu = QdrantUpserter {
-      collection: collection.to_owned(),
-      document: "busco".to_string(),
-      source: "asdasdasdasdasd".to_string(),
-      embeddings: item.embedding.clone(),
-    };
+    for item in er.data.iter() {
+      let qu = QdrantUpserter {
+        collection: collection.to_owned(),
+        document: source.to_owned(),
+        source: input.to_owned(),
+        embeddings: item.embedding.clone(),
+      };
 
-    engine.save_to_qdrant(qu).await?;
+      engine.save_to_qdrant(qu).await?;
+    }
   }
 
   Ok(())
-}
-
-// TODO: chunk document
-async fn do_the_doc_chunk(doc: String) -> impl Stream<Item = Option<String>> {
-  stream! {
-    let file = std::fs::File::open(&doc);
-
-    if file.is_err() {
-      eprintln!("could not open file '{}': {}", doc, file.unwrap_err());
-      yield None;
-      return;
-    }
-
-    let file = file.unwrap();
-  }
 }
