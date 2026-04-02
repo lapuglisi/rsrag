@@ -1,8 +1,14 @@
 #![allow(unused)]
 
 use async_stream::stream;
-use axum::extract::Path;
 use futures_util::stream::{self, Stream};
+use qdrant_client::Payload;
+use qdrant_client::config::QdrantConfig;
+use qdrant_client::qdrant::points_update_operation::PointStructList;
+use qdrant_client::qdrant::{PointStruct, UpsertPointsBuilder};
+use qdrant_client::{Qdrant, qdrant::UpsertPoints};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::{env, io};
 
@@ -12,6 +18,36 @@ const DEFAULT_QDRANT_SERVER: &str = "http://192.120.100.20:6334";
 struct RaggerEngine {
   embed_server: String,
   qdrant_server: String,
+}
+
+//
+// Llama Embedding Response
+//
+#[derive(Deserialize, Debug)]
+struct EmbedResponseData {
+  index: u32,
+  object: String,
+  embedding: Vec<f32>,
+}
+
+#[derive(Deserialize, Debug)]
+struct EmbedResponseUsage {
+  prompt_tokens: u32,
+  total_tokens: u32,
+}
+
+#[derive(Deserialize, Debug)]
+struct EmbedResponse {
+  model: String,
+  object: String,
+  usage: EmbedResponseUsage,
+  data: Vec<EmbedResponseData>,
+}
+////////////////////////////
+
+#[derive(Deserialize, Serialize, Debug)]
+struct EmbedRequest {
+  input: String,
 }
 
 impl RaggerEngine {
@@ -31,16 +67,56 @@ impl RaggerEngine {
     self.qdrant_server = q;
     self
   }
+
+  async fn get_embeddings(&self, input: &str) -> Result<EmbedResponse, Box<dyn Error>> {
+    let url = format!("{}/v1/embeddings", self.embed_server);
+
+    let er = EmbedRequest {
+      input: input.to_string(),
+    };
+
+    let json = serde_json::to_string(&er)?;
+    let client = Client::new().post(url).body(json).send().await?;
+
+    let body = client.text().await?;
+    let resp: EmbedResponse = serde_json::from_str(&body)?;
+
+    Ok(resp)
+  }
+
+  async fn save_to_qdrant(&self, data: QdrantUpserter) -> Result<(), Box<dyn Error>> {
+    let qdrant = Qdrant::from_url(&self.qdrant_server).build()?;
+
+    let point_id = uuid::Uuid::now_v7().to_string();
+
+    let mut payload = Payload::new();
+    payload.insert("source", data.source);
+    payload.insert("document", data.document);
+
+    let point = PointStruct::new(point_id, data.embeddings, payload);
+    eprintln!("about to upsert {:?} into {}", point, data.collection);
+
+    let up = UpsertPointsBuilder::new(&data.collection, vec![point]).build();
+
+    let resp = qdrant.upsert_points(up).await?;
+
+    eprintln!("got qdrant response: {:?}", resp);
+
+    Ok(())
+  }
 }
 
+// Qdrant stuff
+#[derive(Debug)]
 struct QdrantUpserter {
+  collection: String,
   embeddings: Vec<f32>,
   document: String,
   source: String,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-  // TODO: parse arguments
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
   let mut args = env::args();
   let mut engine: RaggerEngine = RaggerEngine::new();
 
@@ -68,6 +144,25 @@ fn main() -> Result<(), Box<dyn Error>> {
   println!();
 
   // TODO: check endpoints health
+  let input = "Busco sexo com alegria e satisfação.";
+  let er = engine.get_embeddings(input).await?;
+
+  let collection: String = er
+    .model
+    .chars()
+    .map(|c| if c.is_ascii_punctuation() { '-' } else { c })
+    .collect();
+
+  for item in er.data.iter() {
+    let qu = QdrantUpserter {
+      collection: collection.to_owned(),
+      document: "busco".to_string(),
+      source: "asdasdasdasdasd".to_string(),
+      embeddings: item.embedding.clone(),
+    };
+
+    engine.save_to_qdrant(qu).await?;
+  }
 
   Ok(())
 }
@@ -85,14 +180,4 @@ async fn do_the_doc_chunk(doc: String) -> impl Stream<Item = Option<String>> {
 
     let file = file.unwrap();
   }
-}
-
-// TODO: request embeddings
-fn get_embeddings(input: &str) -> Option<Vec<f32>> {
-  None
-}
-
-// TODO: save embeddings to qdrant
-fn save_to_qdrant(url: String, embed: Vec<f32>) -> Result<(), Box<dyn Error>> {
-  Ok(())
 }
