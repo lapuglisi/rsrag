@@ -62,7 +62,7 @@ impl RaggerEngine {
       qdrant_server: DEFAULT_QDRANT_SERVER.to_string(),
       source: None,
       chunk_size: 4096,
-      delimiters: DEFAULT_CHUNK_DELIMS.to_string(),
+      delimiters: String::from(DEFAULT_CHUNK_DELIMS),
     }
   }
 
@@ -146,10 +146,9 @@ impl RaggerEngine {
     Ok(())
   }
 
-  // TODO: chunk document
   async fn do_the_chunk(&self, content: &str) -> impl Stream<Item = String> {
     stream! {
-      let delims = self.delimiters.clone();
+      let delims = self.delimiters.as_str();
       let bytes = content.as_bytes();
       let chunks: Vec<&[u8]> = chunk::chunk(bytes)
         .delimiters(delims.as_bytes())
@@ -208,11 +207,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
           if let Ok(i) = c.parse::<usize>() {
             engine.chunk_size = i;
           }
-        }
-      }
-      "--delimiters" | "--delims" | "-d" => {
-        if let Some(d) = iter.next() {
-          engine.delimiters = d;
         }
       }
       _ => {}

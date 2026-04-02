@@ -15,6 +15,7 @@ pub const LLAMA_DEFAULT_TOP_K: u32 = 40;
 pub const LLAMA_DEFAULT_TOP_P: f32 = 0.9;
 pub const LLAMA_DEFAULT_STREAM: bool = false;
 pub const LLAMA_RERANK_DEFAULT_THRESHOLD: f32 = 0.8;
+pub const LLAMA_RERANK_DEFAULT_TOP_N: u32 = 5;
 
 #[derive(Serialize, Debug)]
 #[serde(default)]
@@ -163,6 +164,7 @@ pub struct RerankRequest {
   documents: Vec<String>,
   threshold: f32,
   model: Option<String>,
+  top_n: u32,
 }
 
 impl RerankRequest {
@@ -172,6 +174,7 @@ impl RerankRequest {
       documents: Vec::new(),
       threshold: LLAMA_RERANK_DEFAULT_THRESHOLD,
       model: None,
+      top_n: LLAMA_RERANK_DEFAULT_TOP_N,
     }
   }
 
@@ -199,6 +202,11 @@ impl RerankRequest {
     self.model = Some(m);
     self
   }
+
+  pub fn with_top_n(mut self, n: u32) -> Self {
+    self.top_n = n;
+    self
+  }
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -206,6 +214,7 @@ struct LlamaRerankRequest {
   model: String,
   query: String,
   documents: Vec<String>,
+  top_n: u32,
 }
 
 #[derive(Deserialize, Debug)]
@@ -277,6 +286,7 @@ impl<'l> LlamaEngine {
       model: request.model.unwrap(),
       query: request.query,
       documents: request.documents.clone(),
+      top_n: request.top_n,
     };
 
     let json = serde_json::to_string(&rr)?;
@@ -293,7 +303,13 @@ impl<'l> LlamaEngine {
     let body = client.text().await?;
     log::debug!("got rerank body: {}", body);
 
-    let resp: LlamaRerankResponse = serde_json::from_str(&body)?;
+    let resp: LlamaRerankResponse = match serde_json::from_str(&body) {
+      Ok(r) => r,
+      Err(e) => {
+        log::warn!("unexpected rerank response: {}", body);
+        return Err(e)?;
+      }
+    };
 
     resp.results.iter().for_each(|result| {
       // Check for relevance_score against threshold
@@ -364,7 +380,14 @@ impl<'l> LlamaEngine {
 
     log::debug!("send {:?} to {}", request, url);
 
-    let json = serde_json::to_string(&request).expect("lascou");
+    let json = match serde_json::to_string(&request) {
+      Ok(j) => j,
+      Err(e) => {
+        let error = format!("could not serialize json: {}", e);
+        log::warn!("{}", error);
+        return Body::from(error).into_response();
+      }
+    };
 
     match Client::new()
       .post(url)
@@ -374,7 +397,10 @@ impl<'l> LlamaEngine {
       .await
     {
       Ok(r) => Body::from_stream(r.bytes_stream()).into_response(),
-      Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("error: {}", e)).into_response(),
+      Err(e) => {
+        log::warn!("error getting completion: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("error: {}", e)).into_response()
+      }
     }
   }
 }
