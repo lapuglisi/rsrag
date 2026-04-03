@@ -5,6 +5,7 @@ use futures_util::{
   StreamExt,
   stream::{self, Stream},
 };
+use pdf_oxide::{PdfDocument, converters::ConversionOptions};
 use qdrant_client::{
   Payload, Qdrant,
   qdrant::{PointStruct, UpsertPoints, UpsertPointsBuilder},
@@ -15,7 +16,7 @@ use std::{env, error::Error, pin};
 
 const DEFAULT_EMBED_SERVER: &str = "http://192.120.100.20:8888";
 const DEFAULT_QDRANT_SERVER: &str = "http://192.120.100.20:6334";
-const DEFAULT_CHUNK_DELIMS: &str = ".!?\n";
+const DEFAULT_CHUNK_DELIMS: &str = "\n.?!";
 
 struct RaggerEngine {
   embed_server: String,
@@ -23,6 +24,7 @@ struct RaggerEngine {
   source: Option<String>,
   chunk_size: usize,
   delimiters: String,
+  pdf_pw: Option<String>,
 }
 
 //
@@ -63,6 +65,7 @@ impl RaggerEngine {
       source: None,
       chunk_size: 4096,
       delimiters: String::from(DEFAULT_CHUNK_DELIMS),
+      pdf_pw: None,
     }
   }
 
@@ -84,7 +87,40 @@ impl RaggerEngine {
     match mime {
       m if m == mime_guess::mime::APPLICATION_PDF => {
         println!("reading a pdf file: {}", s);
-        data = pdf_extract::extract_text_by_pages(file)?;
+        let mut doc = pdf_oxide::PdfDocument::open(&file);
+        if doc.is_err() {
+          let err_str = format!("could not open pdf: {}", doc.unwrap_err());
+          eprintln!("{}", err_str);
+          return Err(err_str)?;
+        }
+        let mut doc = doc.unwrap();
+
+        if let Some(pwd) = self.pdf_pw.clone() {
+          eprint!("authenticating pdf with provided password... ");
+          match doc.authenticate(pwd.as_bytes()) {
+            Ok(true) => {
+              eprintln!("\x1b[32mok!\x1b[0m");
+            }
+            Ok(false) => {
+              eprintln!("\x1b[33mfailed!\x1b[0m");
+            }
+            Err(e) => {
+              eprintln!("\x1b[31merror\x1b[0m: {}", e);
+            }
+          }
+        }
+        let pages = doc.page_count().unwrap_or(0);
+
+        for page in 0..pages {
+          match doc.extract_text(page) {
+            Ok(t) => {
+              data.push(t);
+            }
+            Err(e) => {
+              eprintln!("could not get page #{} text: {}", page, e);
+            }
+          }
+        }
       }
       _ => {
         println!("reading text file: {}", s);
@@ -209,6 +245,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
           }
         }
       }
+      "--delims" | "--delimiters" => {
+        if let Some(d) = iter.next() {
+          engine.delimiters.clone_from(&d);
+        }
+      }
+      "--pdfpw" => {
+        if let Some(p) = iter.next() {
+          engine.pdf_pw = Some(p);
+        }
+      }
       _ => {}
     }
   }
@@ -219,7 +265,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
   println!("engine.qdrant_server ..... {}", engine.qdrant_server);
   println!("engine.source ............ {:?}", engine.source);
   println!("engine.chunk_size ........ {}", engine.chunk_size);
-  println!("engine.delimiters ........ {:?}", engine.delimiters);
+  println!("engine.delimiters ........ {}", engine.delimiters);
+  println!("engine.pdf_pw ............ {:?}", engine.pdf_pw);
   println!();
 
   if engine.source.is_none() {
