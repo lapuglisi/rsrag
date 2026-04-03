@@ -14,7 +14,7 @@ use crate::engine::{
 
 const RAGAPI_DEFAULT_HOST: &str = "127.0.0.1";
 const RAGAPI_DEFAULT_PORT: u16 = 9091;
-const RAGAPI_LLM_SYSTEM_PROMPT: &str = "You are a helpful assistant expert in answering prompts in a RAG environment.\nAnswer the user prompt using only the provided context. If you do not know the answer, simply state that you don't know.";
+const RAGAPI_LLM_SYSTEM_PROMPT: &str = "You are a helpful assistant expert in answering prompts in a RAG environment.\nAnswer the user prompt using only the provided context.\nIf you do not know the answer, simply state: I don't know.\nMAKE SURE to answer the user's question in the original language.";
 
 macro_rules! RAGAPI_LLM_USER_PROMPT {
   () => {
