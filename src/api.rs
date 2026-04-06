@@ -14,13 +14,7 @@ use crate::engine::{
 
 const RAGAPI_DEFAULT_HOST: &str = "127.0.0.1";
 const RAGAPI_DEFAULT_PORT: u16 = 9091;
-const RAGAPI_LLM_SYSTEM_PROMPT: &str = "You are a helpful assistant expert in answering prompts in a RAG environment.\nAnswer the user prompt using only the provided context.\nIf you do not know the answer, simply state: I don't know.\nMAKE SURE to answer the user's question in the original language.";
-
-macro_rules! RAGAPI_LLM_USER_PROMPT {
-  () => {
-    "Use the provided context to answer the question.\n\nContext: {}\n\nQuestion: {}"
-  };
-}
+const RAGAPI_LLM_SYSTEM_PROMPT: &str = "You are a helpful assistant and expert in answering prompts in a RAG environment.\nAnswer the user prompt using only the provided context.\nIf you do not know the answer, simply state: I don't know.\nMAKE SURE to answer the user's question in the original language.";
 
 // Structs for json requests
 #[derive(Deserialize, Debug)]
@@ -251,7 +245,7 @@ async fn api_completion(
       let context = if payload.rerank.is_some() {
         let rerank = payload.rerank.unwrap();
 
-        log::info!("reranking vectordb results...");
+        log::debug!("reranking vectordb results...");
 
         let rr = RerankRequest::new()
           .with_query(&payload.prompt)
@@ -274,12 +268,6 @@ async fn api_completion(
         docs
       };
 
-      let user_msg = format!(
-        RAGAPI_LLM_USER_PROMPT!(),
-        context.join("\n"),
-        payload.prompt
-      );
-
       messages.push(
         LlamaCompletionMessage::new()
           .with_role("system")
@@ -289,7 +277,44 @@ async fn api_completion(
       messages.push(
         LlamaCompletionMessage::new()
           .with_role("user")
-          .with_content(&user_msg),
+          .with_content("Hi, LLM."),
+      );
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("assistant")
+          .with_content("Hi, user."),
+      );
+
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("user")
+          .with_content(
+            "Provided some context, answer th user's query with as much information as you can.",
+          ),
+      );
+
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("assistant")
+          .with_content("Sure! What is the context?"),
+      );
+
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("user")
+          .with_content(context.join("\n").as_str()),
+      );
+
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("assistant")
+          .with_content("Perfetct. And what do you want to know?"),
+      );
+
+      messages.push(
+        LlamaCompletionMessage::new()
+          .with_role("user")
+          .with_content(&payload.prompt),
       );
     }
     Err(e) => {

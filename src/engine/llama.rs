@@ -340,6 +340,11 @@ impl<'l> LlamaEngine {
   }
 
   // Endpoints implementation
+  // TODO: Add hybrid search log to get embeddings
+  // will be using:
+  //   - dense-default
+  //   - dense-colbert
+  //   - sparse-bm25
   pub async fn get_embeddings(
     &self,
     input: &str,
