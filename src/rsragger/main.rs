@@ -8,11 +8,17 @@ use futures_util::{
 use pdf_oxide::{PdfDocument, converters::ConversionOptions};
 use qdrant_client::{
   Payload, Qdrant,
-  qdrant::{PointStruct, UpsertPoints, UpsertPointsBuilder},
+  qdrant::{DenseVector, Document, PointStruct, UpsertPointsBuilder, Vector, Vectors},
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{env, error::Error, pin};
+use std::{
+  any::{self, Any, TypeId},
+  collections::HashMap,
+  env,
+  error::Error,
+  pin,
+};
 
 const DEFAULT_EMBED_SERVER: &str = "http://192.120.100.20:8888";
 const DEFAULT_QDRANT_SERVER: &str = "http://192.120.100.20:6334";
@@ -54,7 +60,70 @@ struct EmbedResponse {
 
 #[derive(Deserialize, Serialize, Debug)]
 struct EmbedRequest {
+  model: Option<String>,
   input: String,
+}
+
+// Qdrant stuff
+#[derive(Debug)]
+struct QdrantUpserter {
+  collection: String,
+  vectors: Option<std::collections::HashMap<String, Vector>>,
+  payload: HashMap<String, serde_json::Value>,
+  embeddings: Option<Vec<f32>>,
+}
+
+impl QdrantUpserter {
+  fn new(collection: &str) -> Self {
+    Self {
+      collection: String::from(collection),
+      vectors: None,
+      embeddings: None,
+      payload: HashMap::new(),
+    }
+  }
+
+  fn with_payload(mut self, key: &str, value: &str) -> Self {
+    self.payload.insert(
+      key.to_string(),
+      serde_json::Value::String(String::from(value)),
+    );
+    self
+  }
+
+  fn add_document(mut self, name: &str, text: &str, model: &str) -> Self {
+    let mut vectors = self.vectors.unwrap_or(HashMap::new());
+    let doc = Document::new(text, model);
+
+    vectors.insert(name.to_string(), Vector::from(doc));
+
+    self.vectors = Some(vectors);
+
+    self
+  }
+
+  fn add_dense(mut self, name: &str, embeds: &Vec<f32>) -> Self {
+    let mut vectors = self.vectors.unwrap_or(HashMap::new());
+
+    vectors.insert(name.to_string(), Vector::new_dense(embeds.as_slice()));
+    self.vectors = Some(vectors);
+
+    self
+  }
+
+  fn add_vector(mut self, name: &str, embeddings: Vec<f32>) -> Self {
+    let mut vectors = self.vectors.unwrap_or(HashMap::new());
+
+    vectors.insert(name.to_string(), Vector::new(embeddings));
+    self.vectors = Some(vectors);
+
+    self
+  }
+
+  fn with_embeddings(mut self, e: Vec<f32>) -> Self {
+    self.embeddings = Some(e);
+    self
+  }
 }
 
 impl RaggerEngine {
@@ -132,11 +201,16 @@ impl RaggerEngine {
     Ok(data)
   }
 
-  async fn get_embeddings(&self, input: &str) -> Result<EmbedResponse, Box<dyn Error>> {
+  async fn get_embeddings(
+    &self,
+    input: &str,
+    model: Option<&str>,
+  ) -> Result<EmbedResponse, Box<dyn Error>> {
     let url = format!("{}/v1/embeddings", self.embed_server);
 
     let er = EmbedRequest {
-      input: input.to_string(),
+      model: model.map(|s| s.to_string()),
+      input: String::from(input),
     };
 
     let json = serde_json::to_string(&er)?;
@@ -156,16 +230,19 @@ impl RaggerEngine {
     let qdrant = Qdrant::from_url(&self.qdrant_server).build()?;
 
     let point_id = uuid::Uuid::now_v7().to_string();
+    let payload: Payload = data.payload.into();
 
-    let mut payload = Payload::new();
-    payload.insert("source", data.source);
-    payload.insert("document", data.document);
+    let mut points: Vec<PointStruct> = Vec::new();
 
-    let point = PointStruct::new(point_id, data.embeddings, payload);
-    println!("about to upsert {:?} into {}", point.id, data.collection);
+    if let Some(e) = data.embeddings {
+      points.push(PointStruct::new(point_id, e, payload));
+    } else if let Some(v) = data.vectors {
+      points.push(PointStruct::new(point_id, v, payload));
+    }
 
-    let up = UpsertPointsBuilder::new(&data.collection, vec![point]).build();
+    println!("about to upsert {:?} into {}", points, data.collection);
 
+    let up = UpsertPointsBuilder::new(data.collection, points);
     let resp = qdrant.upsert_points(up).await?;
 
     if resp.result.is_some() {
@@ -206,19 +283,11 @@ impl RaggerEngine {
   }
 }
 
-// Qdrant stuff
-#[derive(Debug)]
-struct QdrantUpserter {
-  collection: String,
-  embeddings: Vec<f32>,
-  document: String,
-  source: String,
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
   let mut args = env::args();
   let mut engine: RaggerEngine = RaggerEngine::new();
+  let mut qdrant_collection: Option<String> = None;
 
   let mut iter = args.into_iter();
   while let Some(arg) = iter.next() {
@@ -255,6 +324,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
           engine.pdf_pw = Some(p);
         }
       }
+      "--qdrant-collection" | "-qc" => {
+        if let Some(c) = iter.next() {
+          qdrant_collection = Some(c);
+        }
+      }
       _ => {}
     }
   }
@@ -267,6 +341,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
   println!("engine.chunk_size ........ {}", engine.chunk_size);
   println!("engine.delimiters ........ {}", engine.delimiters);
   println!("engine.pdf_pw ............ {:?}", engine.pdf_pw);
+  println!("qdrant_collection ........ {:?}", qdrant_collection);
   println!();
 
   if engine.source.is_none() {
@@ -288,24 +363,49 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::pin!(chunks);
 
     while let Some(chunk) = chunks.next().await {
-      println!("getting embeddings for '{:?}'...", chunk);
-      let er = engine.get_embeddings(&chunk).await?;
+      // get embeddings for each used model (embeddings and colbert)
+      // and upsert them accordingly
+      //
+      //
+      if let Some(collection) = qdrant_collection.as_ref() {
+        let mut qu = QdrantUpserter::new(collection)
+          .with_payload("document", &source)
+          .with_payload("source", &chunk);
 
-      let collection: String = er
-        .model
-        .chars()
-        .map(|c| if c.is_ascii_punctuation() { '-' } else { c })
-        .collect();
+        let mut model = "embeddings:default";
+        println!("getting embeddings from '{}' for '{:?}'...", model, chunk);
+        let er = engine.get_embeddings(&chunk, Some(model)).await?;
 
-      for item in er.data.iter() {
-        let qu = QdrantUpserter {
-          collection: collection.to_owned(),
-          document: source.to_owned(),
-          source: input.to_owned(),
-          embeddings: item.embedding.clone(),
-        };
+        qu = qu.add_dense("text-dense", &er.data[0].embedding);
 
+        model = "embeddings:colbert";
+        println!("getting embeddings from '{}' for '{:?}'...", model, chunk);
+
+        let er = engine.get_embeddings(&chunk, Some(model)).await?;
+        qu = qu.add_dense("text-colbert", &er.data[0].embedding);
+
+        qu = qu.add_document("text-sparse", &chunk, "qdrant/bm25");
+
+        // got it, update embeddings for
+        //
         engine.save_to_qdrant(qu).await?;
+      } else {
+        let er = engine.get_embeddings(&chunk, None).await?;
+
+        let collection: String = er
+          .model
+          .chars()
+          .map(|c| if c.is_ascii_punctuation() { '-' } else { c })
+          .collect();
+
+        for item in er.data.iter() {
+          let qu = QdrantUpserter::new(&collection)
+            .with_embeddings(item.embedding.clone())
+            .with_payload("document", &source)
+            .with_payload("source", &chunk);
+
+          engine.save_to_qdrant(qu).await?;
+        }
       }
     }
   }
