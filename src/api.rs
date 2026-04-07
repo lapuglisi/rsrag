@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
-use qdrant_client::qdrant::Query;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -16,6 +15,7 @@ use crate::engine::{
 const RAGAPI_DEFAULT_HOST: &str = "127.0.0.1";
 const RAGAPI_DEFAULT_PORT: u16 = 9091;
 const RAGAPI_LLM_SYSTEM_PROMPT: &str = "You are a helpful assistant and expert in answering prompts in a RAG environment.\nAnswer the user prompt using only the provided context.\nIf you do not know the answer, simply state: I don't know.\nMAKE SURE to answer the user's question in the original language.";
+const RAGAPI_DEFAULT_RAG_STRATEGY: &str = "full-dbsf";
 
 // Structs for json requests
 #[derive(Deserialize, Debug)]
@@ -43,6 +43,7 @@ pub struct CompletionRequest {
   pub threshold: Option<f32>,
   pub rerank: Option<CompletionRequestRerank>,
   pub db_limit: Option<u64>,
+  pub rag_strategy: Option<String>,
 }
 
 impl Default for CompletionRequest {
@@ -58,6 +59,7 @@ impl Default for CompletionRequest {
       threshold: Some(QDRANT_QUERY_DEFAULT_THRESHOLD),
       rerank: None,
       db_limit: None,
+      rag_strategy: None,
     }
   }
 }
@@ -82,6 +84,7 @@ impl Default for CompletionRequestRerank {
 pub struct RagApiState {
   llama: Arc<LlamaEngine>,
   qdrant: Arc<QdrantEngine>,
+  config: Arc<crate::config::RagConfig>,
 }
 
 pub struct RagApi<'r> {
@@ -89,6 +92,7 @@ pub struct RagApi<'r> {
   port: u16,
   llama: Option<LlamaEngine>,
   qdrant: Option<QdrantEngine>,
+  config: crate::config::RagConfig,
 }
 
 impl<'r> RagApi<'r> {
@@ -98,6 +102,7 @@ impl<'r> RagApi<'r> {
       port: RAGAPI_DEFAULT_PORT,
       llama: None,
       qdrant: None,
+      config: crate::config::RagConfig::default(),
     }
   }
 
@@ -121,6 +126,11 @@ impl<'r> RagApi<'r> {
     self
   }
 
+  pub fn with_config(mut self, config: &crate::config::RagConfig) -> Self {
+    self.config = config.to_owned();
+    self
+  }
+
   pub async fn listen(self) -> Result<(), Box<dyn std::error::Error>> {
     if self.llama.is_none() {
       Err("[rsrag::api::listen] no llama engine configured")?
@@ -133,6 +143,7 @@ impl<'r> RagApi<'r> {
     let st = RagApiState {
       llama: Arc::new(self.llama.unwrap()),
       qdrant: Arc::new(self.qdrant.unwrap()),
+      config: Arc::new(self.config),
     };
 
     let app: Router = Router::new()
@@ -168,6 +179,89 @@ fn get_qdrant_colletion(model: &str) -> String {
     .collect()
 }
 
+async fn get_qdrant_query(
+  state: &RagApiState,
+  request: &CompletionRequest,
+) -> Result<QdrantQuery, Box<dyn std::error::Error>> {
+  let llama = state.llama.as_ref();
+  let qdrant = state.qdrant.as_ref();
+  let config = state.config.as_ref();
+  let prompt = request.prompt.clone();
+  let strategy = request
+    .rag_strategy
+    .clone()
+    .unwrap_or(config.rag_strategy.to_owned());
+
+  let mut model = "embeddings:default";
+  let er_default: EmbedResponse = match llama.get_embeddings(&prompt, Some(model)).await {
+    Ok(v) => v,
+    Err(e) => {
+      let s = format!("could not retrieve embeddings for model {}: {}", model, e);
+      log::warn!("{}", s);
+      return Err(e)?;
+    }
+  };
+
+  model = "embeddings:colbert";
+  let er_colbert: EmbedResponse = match llama.get_embeddings(&prompt, Some(model)).await {
+    Ok(v) => v,
+    Err(e) => {
+      let s = format!("could not retrieve embeddings for model {}: {}", model, e);
+      log::warn!("{}", s);
+      return Err(e)?;
+    }
+  };
+
+  let dense_vector = er_default.embeddings;
+  let colbert_vector = er_colbert.embeddings;
+
+  let mut query = QdrantQuery::new(&qdrant);
+
+  log::info!("generating qdrant query with strategy: {}", strategy);
+
+  query = match strategy.as_str() {
+    "full-rrf" => query
+      .add_prefetch("text-dense", dense_vector)
+      .add_prefetch("text-colbert", colbert_vector)
+      .add_sparse_prefetch("text-sparse", &prompt, None)
+      .with_fusion_rrf(),
+    "full-dbsf" => query
+      .add_prefetch("text-dense", dense_vector)
+      .add_prefetch("text-colbert", colbert_vector)
+      .add_sparse_prefetch("text-sparse", &prompt, None)
+      .with_fusion_dbsf(),
+    "main-dense" => query
+      .add_prefetch("text-colbert", colbert_vector)
+      .add_sparse_prefetch("text-sparse", &prompt, None)
+      .query("text-dense", dense_vector),
+    "main-colbert" => query
+      .add_prefetch("text-dense", dense_vector)
+      .add_sparse_prefetch("text-sparse", &prompt, None)
+      .query("text-colbert", colbert_vector),
+    "no-sparse" | "no-sparse-rrf" => query
+      .add_prefetch("text-dense", dense_vector)
+      .add_prefetch("text-colbert", colbert_vector)
+      .with_fusion_rrf(),
+    "no-colbert" | "no-colbert-rrf" => query
+      .add_prefetch("text-dense", dense_vector)
+      .add_sparse_prefetch("text-sparse", &prompt, None)
+      .with_fusion_rrf(),
+    "no-sparse-dbsf" => query
+      .add_prefetch("text-dense", dense_vector)
+      .add_prefetch("text-colbert", colbert_vector)
+      .with_fusion_dbsf(),
+    "no-colbert-dbsf" => query
+      .add_prefetch("text-dense", dense_vector)
+      .add_sparse_prefetch("text-sparse", &prompt, None)
+      .with_fusion_dbsf(),
+    _ => {
+      return Err(format!("unknown RAG strategy {}", strategy))?;
+    }
+  };
+
+  Ok(query)
+}
+
 #[axum::debug_handler]
 async fn api_embeddings(
   State(st): State<RagApiState>,
@@ -201,11 +295,9 @@ async fn api_completion(
   log::info!("[api_completion] payload is {:?}", payload);
 
   // get embeddings for prompt
-  let llama = st.llama;
-  let qdrant = st.qdrant;
   let mut messages: Vec<LlamaCompletionMessage> = Vec::new();
 
-  if qdrant.client.is_none() {
+  if st.qdrant.client.is_none() {
     return (
       StatusCode::INTERNAL_SERVER_ERROR,
       "qdrant client unitialized",
@@ -213,34 +305,17 @@ async fn api_completion(
       .into_response();
   }
 
-  let mut model = "embeddings:default";
-  let er_default: EmbedResponse = match llama.get_embeddings(&payload.prompt, Some(model)).await {
-    Ok(v) => v,
+  let qdrant_query = match get_qdrant_query(&st, &payload).await {
+    Ok(q) => q,
     Err(e) => {
-      let s = format!("could not retrieve embeddings for model {}: {}", model, e);
-      log::warn!("{}", s);
+      let s = format!("could not setup a qdrant query: {}", e);
+      log::error!("{}", s);
       return (StatusCode::INTERNAL_SERVER_ERROR, s).into_response();
     }
   };
 
-  model = "embeddings:colbert";
-  let er_colbert: EmbedResponse = match llama.get_embeddings(&payload.prompt, Some(model)).await {
-    Ok(v) => v,
-    Err(e) => {
-      let s = format!("could not retrieve embeddings for model {}: {}", model, e);
-      log::warn!("{}", s);
-      return (StatusCode::INTERNAL_SERVER_ERROR, s).into_response();
-    }
-  };
-
-  // Do qdrant similarity search
-  match QdrantQuery::new(&qdrant)
-    .with_collection(qdrant.collection.to_owned())
-    .add_prefetch("text-dense", er_default.embeddings.clone())
-    .add_prefetch("text-colbert", er_colbert.embeddings.clone())
-    .add_sparse_prefetch("text-sparse", &payload.prompt, None)
+  match qdrant_query
     .with_limit(payload.db_limit.unwrap_or(QDRANT_QUERY_DEFAULT_LIMIT))
-    .with_fusion_dbsf()
     .with_threshold(payload.threshold.unwrap())
     .run()
     .await
@@ -272,7 +347,7 @@ async fn api_completion(
 
         log::debug!("rerank request: {:?}", rr);
 
-        match llama.rerank(rr).await {
+        match st.llama.rerank(rr).await {
           Ok(r) => r,
           Err(e) => {
             log::warn!("could not rerank results: {}", e);
@@ -356,5 +431,5 @@ async fn api_completion(
 
   log::debug!("request llama with {:?}", lcr);
 
-  llama.get_completion(lcr).await.into_response()
+  st.llama.get_completion(lcr).await.into_response()
 }

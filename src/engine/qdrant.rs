@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
   CollectionExistsRequest, Fusion, PrefetchQuery, PrefetchQueryBuilder, Query, QueryPointsBuilder,
@@ -37,7 +35,9 @@ impl Default for QdrantQuery {
 #[allow(dead_code)]
 impl QdrantQuery {
   pub fn new(engine: &QdrantEngine) -> Self {
-    Self::default().with_qdrant(engine)
+    Self::default()
+      .with_qdrant(engine)
+      .with_collection(&engine.collection)
   }
 
   fn with_qdrant(mut self, q: &QdrantEngine) -> Self {
@@ -45,8 +45,8 @@ impl QdrantQuery {
     self
   }
 
-  pub fn with_collection(mut self, c: String) -> Self {
-    self.collection = Some(c);
+  pub fn with_collection(mut self, c: &str) -> Self {
+    self.collection = Some(String::from(c));
     self
   }
 

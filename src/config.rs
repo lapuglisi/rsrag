@@ -4,12 +4,14 @@ use std::env;
 
 const RAGAPI_DEFAULT_HOST: &str = "127.0.0.1";
 const RAGAPI_DEFAULT_PORT: u16 = 9091;
+const RAGAPI_DEFAULT_RAG_STRATEGY: &str = "main-dense";
 
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct RagConfig {
   pub log_file: Option<String>,
   pub log_debug: bool,
+  pub rag_strategy: String,
   pub http: HttpConfig,
   pub llama: LlamaConfig,
   pub qdrant: QdrantConfig,
@@ -20,6 +22,7 @@ impl Default for RagConfig {
     Self {
       log_file: None,
       log_debug: false,
+      rag_strategy: String::from(RAGAPI_DEFAULT_RAG_STRATEGY),
       http: HttpConfig::default(),
       llama: LlamaConfig::default(),
       qdrant: QdrantConfig::default(),

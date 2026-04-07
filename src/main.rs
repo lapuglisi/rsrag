@@ -74,7 +74,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_listen_host(&settings.http.host)
     .with_listen_port(settings.http.port)
     .with_llama_engine(llama)
-    .with_qdrant_engine(qdrant);
+    .with_qdrant_engine(qdrant)
+    .with_config(&settings);
 
   // the do it
   match api.listen().await {
