@@ -67,6 +67,7 @@ pub struct QdrantConfig {
   pub host: String,
   pub port: u16,
   pub query_limit: u64,
+  pub collection: String,
 }
 
 impl Default for QdrantConfig {
@@ -75,6 +76,7 @@ impl Default for QdrantConfig {
       host: "127.0.0.1".to_string(),
       port: 6334,
       query_limit: 0,
+      collection: String::new(),
     }
   }
 }

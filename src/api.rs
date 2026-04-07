@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use qdrant_client::qdrant::Query;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use crate::engine::{
     LLAMA_DEFAULT_TOP_P, LLAMA_RERANK_DEFAULT_THRESHOLD, LlamaCompletionMessage,
     LlamaCompletionRequest, LlamaEngine, RerankRequest,
   },
-  qdrant::{QDRANT_QUERY_DEFAULT_THRESHOLD, QdrantEngine, QdrantQuery},
+  qdrant::{QDRANT_QUERY_DEFAULT_LIMIT, QDRANT_QUERY_DEFAULT_THRESHOLD, QdrantEngine, QdrantQuery},
 };
 
 const RAGAPI_DEFAULT_HOST: &str = "127.0.0.1";
@@ -41,6 +42,7 @@ pub struct CompletionRequest {
   pub top_p: Option<f32>,
   pub threshold: Option<f32>,
   pub rerank: Option<CompletionRequestRerank>,
+  pub db_limit: Option<u64>,
 }
 
 impl Default for CompletionRequest {
@@ -55,6 +57,7 @@ impl Default for CompletionRequest {
       top_p: Some(LLAMA_DEFAULT_TOP_P),
       threshold: Some(QDRANT_QUERY_DEFAULT_THRESHOLD),
       rerank: None,
+      db_limit: None,
     }
   }
 }
@@ -172,7 +175,11 @@ async fn api_embeddings(
 ) -> impl IntoResponse {
   log::debug!("[api_embeddings] payload is {:?}", payload);
 
-  let resp = match st.llama.get_embeddings(&payload.input).await {
+  let resp = match st
+    .llama
+    .get_embeddings(&payload.input, Some("default"))
+    .await
+  {
     Ok(v) => (
       StatusCode::OK,
       serde_json::to_string(&v).unwrap_or("{}".to_string()),
@@ -206,24 +213,34 @@ async fn api_completion(
       .into_response();
   }
 
-  let er: EmbedResponse = match llama.get_embeddings(&payload.prompt).await {
+  let mut model = "embeddings:default";
+  let er_default: EmbedResponse = match llama.get_embeddings(&payload.prompt, Some(model)).await {
     Ok(v) => v,
     Err(e) => {
-      log::warn!("could not retrieve embeddings: {}", e);
-      EmbedResponse {
-        model: "none".to_string(),
-        embeddings: Vec::new(),
-      }
+      let s = format!("could not retrieve embeddings for model {}: {}", model, e);
+      log::warn!("{}", s);
+      return (StatusCode::INTERNAL_SERVER_ERROR, s).into_response();
+    }
+  };
+
+  model = "embeddings:colbert";
+  let er_colbert: EmbedResponse = match llama.get_embeddings(&payload.prompt, Some(model)).await {
+    Ok(v) => v,
+    Err(e) => {
+      let s = format!("could not retrieve embeddings for model {}: {}", model, e);
+      log::warn!("{}", s);
+      return (StatusCode::INTERNAL_SERVER_ERROR, s).into_response();
     }
   };
 
   // Do qdrant similarity search
-  let collection: String = get_qdrant_colletion(&er.model);
-  log::info!("using qdrant collection {}", &collection);
-
   match QdrantQuery::new(&qdrant)
-    .with_collection(collection)
-    .with_embeddings(er.embeddings)
+    .with_collection(qdrant.collection.to_owned())
+    .add_prefetch("text-dense", er_default.embeddings.clone())
+    .add_prefetch("text-colbert", er_colbert.embeddings.clone())
+    .add_sparse_prefetch("text-sparse", &payload.prompt, None)
+    .with_limit(payload.db_limit.unwrap_or(QDRANT_QUERY_DEFAULT_LIMIT))
+    .with_fusion_dbsf()
     .with_threshold(payload.threshold.unwrap())
     .run()
     .await

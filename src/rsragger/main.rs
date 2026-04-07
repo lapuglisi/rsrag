@@ -383,7 +383,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         let er = engine.get_embeddings(&chunk, Some(model)).await?;
         qu = qu.add_dense("text-colbert", &er.data[0].embedding);
-
         qu = qu.add_document("text-sparse", &chunk, "qdrant/bm25");
 
         // got it, update embeddings for

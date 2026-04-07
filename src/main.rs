@@ -66,7 +66,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let qdrant_url = format!("{}:{}", settings.qdrant.host, settings.qdrant.port);
   log::info!("initialize qdrant: {}", qdrant_url);
 
-  let qdrant: QdrantEngine = QdrantEngine::new(qdrant_url);
+  let qdrant: QdrantEngine =
+    QdrantEngine::new(qdrant_url).with_collection(&settings.qdrant.collection);
 
   // then create the api object
   let api = api::RagApi::new()

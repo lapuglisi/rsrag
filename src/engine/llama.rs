@@ -127,6 +127,7 @@ impl LlamaCompletionMessage {
 
 #[derive(Serialize, Deserialize)]
 pub struct LlamaEmbedRequest {
+  pub model: Option<String>,
   pub input: String,
 }
 
@@ -348,9 +349,11 @@ impl<'l> LlamaEngine {
   pub async fn get_embeddings(
     &self,
     input: &str,
+    model: Option<&str>,
   ) -> Result<crate::api::EmbedResponse, Box<dyn std::error::Error>> {
     let url = format!("{}/v1/embeddings", self.embed_server);
     let er = LlamaEmbedRequest {
+      model: model.map(|s| s.to_string()),
       input: input.into(),
     };
 
