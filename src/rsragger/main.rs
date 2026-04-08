@@ -194,10 +194,15 @@ impl RaggerEngine {
           }
         }
       }
-      _ => {
-        log::info!("reading text file: {}", s);
+      m if m.type_() == mime_guess::mime::TEXT => {
+        log::info!("reading text file: {} ({})", s, m);
         let buf = std::fs::read_to_string(file)?;
         data.push(buf);
+      }
+      m => {
+        let err = format!("unhandled mime type '{}'", m);
+        log::warn!("{}: {}", s, err);
+        return Err(err)?;
       }
     }
 
@@ -359,6 +364,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
   let mut log_file: Option<String> = None;
   let mut log_level: log::LevelFilter = log::LevelFilter::Info;
   let mut watch_dir: Option<String> = None;
+  let mut watch_delete: bool = false;
 
   let mut iter = args.into_iter();
   while let Some(arg) = iter.next() {
@@ -397,6 +403,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
       "--log-file" | "--log" | "-lf" => log_file = iter.next(),
       "--debug" | "-d" => log_level = log::LevelFilter::Debug,
       "--watch" => watch_dir = iter.next(),
+      "--watch-delete" | "-wd" => {
+        if let Some(b) = iter.next() {
+          watch_delete = b.parse::<bool>().unwrap_or(false);
+        }
+      }
       _ => {}
     }
   }
@@ -427,6 +438,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
   log::info!("engine.pdf_pw ............ {:?}", engine.pdf_pw);
   log::info!("qdrant_collection ........ {:?}", engine.qdrant_collection);
   log::info!("watch_dir ................ {:?}", watch_dir);
+  log::info!("watch_delete ............. {}", watch_delete);
   log::info!("");
 
   if engine.qdrant_collection.is_none() {
@@ -465,11 +477,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
               if path.is_file() {
                 log::info!("handling file '{}'", file);
 
-                match handle_content(&engine, &file).await {
-                  Ok(_) => log::info!("file '{}' handled successfully.", file),
-                  Err(e) => {
-                    log::error!("error while handling '{}': {}", file, e);
+                log::set_max_level(log::LevelFilter::Off);
+                let call = handle_content(&engine, &file).await;
+                log::set_max_level(log_level);
+
+                if call.is_ok() {
+                  log::info!("file '{}' handled successfully.", file);
+                } else {
+                  let err = call.unwrap_err();
+                  log::error!("error while handling '{}': {}", file, err);
+                }
+
+                if watch_delete {
+                  log::info!("removing file {}", file);
+
+                  match std::fs::remove_file(&path) {
+                    Ok(_) => log::info!("file {} removed", file),
+                    Err(e) => log::error!("could not remove file {}: {}", file, e),
                   }
+                } else {
+                  log::info!("not deleting file {}", file);
                 }
               } else {
                 log::warn!("path '{}' is not a file. skipping", file);
