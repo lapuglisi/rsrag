@@ -430,15 +430,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
   log::info!("");
   log::info!("using:");
-  log::info!("engine.embed_server ...... {}", engine.embed_server);
-  log::info!("engine.qdrant_server ..... {}", engine.qdrant_server);
-  log::info!("engine.source ............ {:?}", engine.source);
-  log::info!("engine.chunk_size ........ {}", engine.chunk_size);
-  log::info!("engine.delimiters ........ {}", engine.delimiters);
-  log::info!("engine.pdf_pw ............ {:?}", engine.pdf_pw);
-  log::info!("qdrant_collection ........ {:?}", engine.qdrant_collection);
-  log::info!("watch_dir ................ {:?}", watch_dir);
-  log::info!("watch_delete ............. {}", watch_delete);
+  log::info!("engine.embed_server ... {}", engine.embed_server);
+  log::info!("engine.qdrant_server .. {}", engine.qdrant_server);
+  log::info!("engine.source ......... {:?}", engine.source);
+  log::info!("engine.chunk_size ..... {}", engine.chunk_size);
+  log::info!("engine.delimiters ..... {}", engine.delimiters);
+  log::info!("engine.pdf_pw ......... {:?}", engine.pdf_pw);
+  log::info!("qdrant_collection ..... {:?}", engine.qdrant_collection);
+  log::info!("watch_dir ............. {:?}", watch_dir);
+  log::info!("watch_delete .......... {}", watch_delete);
   log::info!("");
 
   if engine.qdrant_collection.is_none() {
@@ -467,8 +467,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Ok(event) => {
           log::debug!("watcher: got event {:?}", event);
 
-          if event.kind.is_create() {
-            log::info!("got 'created' event: {:?}", event);
+          if event.kind.is_create() || event.kind.is_modify() {
+            log::info!("got 'created|modify' event: {:?}", event);
 
             for path in event.paths {
               let file = path.to_string_lossy();
