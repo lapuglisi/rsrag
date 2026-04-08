@@ -22,6 +22,7 @@ struct RaggerEngine {
   delimiters: String,
   pdf_pw: Option<String>,
   qdrant_collection: Option<String>,
+  sleep_between_upserts: f64,
 }
 
 //
@@ -131,6 +132,7 @@ impl RaggerEngine {
       delimiters: String::from(DEFAULT_CHUNK_DELIMS),
       pdf_pw: None,
       qdrant_collection: None,
+      sleep_between_upserts: 1.0,
     }
   }
 
@@ -291,7 +293,7 @@ impl RaggerEngine {
   }
 }
 
-async fn handle_content(engine: &RaggerEngine, source: &str) -> Result<(), Box<dyn Error>> {
+async fn do_the_harlem_shake(engine: &RaggerEngine, source: &str) -> Result<(), Box<dyn Error>> {
   let mut content: Vec<String> = Vec::new();
 
   if std::fs::exists(&source).unwrap_or(false) {
@@ -351,6 +353,14 @@ async fn handle_content(engine: &RaggerEngine, source: &str) -> Result<(), Box<d
           engine.save_to_qdrant(qu).await?;
         }
       }
+
+      log::info!(
+        "sleeping {} seconds before next upsert.",
+        engine.sleep_between_upserts
+      );
+      std::thread::sleep(std::time::Duration::from_secs_f64(
+        engine.sleep_between_upserts,
+      ));
     }
   }
 
@@ -408,6 +418,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
           watch_delete = b.parse::<bool>().unwrap_or(false);
         }
       }
+      "--sleep" => {
+        if let Some(s) = iter.next() {
+          let default = engine.sleep_between_upserts;
+          engine.sleep_between_upserts = s.parse::<f64>().unwrap_or(default);
+        }
+      }
       _ => {}
     }
   }
@@ -430,15 +446,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
   log::info!("");
   log::info!("using:");
-  log::info!("engine.embed_server ... {}", engine.embed_server);
-  log::info!("engine.qdrant_server .. {}", engine.qdrant_server);
-  log::info!("engine.source ......... {:?}", engine.source);
-  log::info!("engine.chunk_size ..... {}", engine.chunk_size);
-  log::info!("engine.delimiters ..... {}", engine.delimiters);
-  log::info!("engine.pdf_pw ......... {:?}", engine.pdf_pw);
-  log::info!("qdrant_collection ..... {:?}", engine.qdrant_collection);
-  log::info!("watch_dir ............. {:?}", watch_dir);
-  log::info!("watch_delete .......... {}", watch_delete);
+  log::info!("engine.embed_server ..... {}", engine.embed_server);
+  log::info!("engine.qdrant_server .... {}", engine.qdrant_server);
+  log::info!("engine.source ........... {:?}", engine.source);
+  log::info!("engine.chunk_size ....... {}", engine.chunk_size);
+  log::info!("engine.delimiters ....... {}", engine.delimiters);
+  log::info!("engine.pdf_pw ........... {:?}", engine.pdf_pw);
+  log::info!("qdrant_collection ....... {:?}", engine.qdrant_collection);
+  log::info!("watch_dir ............... {:?}", watch_dir);
+  log::info!("watch_delete ............ {}", watch_delete);
+  log::info!("sleep_between_upserts ... {}", engine.sleep_between_upserts);
   log::info!("");
 
   if engine.qdrant_collection.is_none() {
@@ -478,7 +495,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 log::info!("handling file '{}'", file);
 
                 log::set_max_level(log::LevelFilter::Off);
-                let call = handle_content(&engine, &file).await;
+                let call = do_the_harlem_shake(&engine, &file).await;
                 log::set_max_level(log_level);
 
                 if call.is_ok() {
@@ -517,6 +534,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let source = engine.source.as_ref().unwrap();
-    handle_content(&engine, source).await
+    do_the_harlem_shake(&engine, source).await
   }
 }
