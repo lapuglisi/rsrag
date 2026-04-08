@@ -1,24 +1,13 @@
-#![allow(unused)]
-
 use async_stream::stream;
-use futures_util::{
-  StreamExt,
-  stream::{self, Stream},
-};
-use pdf_oxide::{PdfDocument, converters::ConversionOptions};
+use futures_util::{StreamExt, stream::Stream};
+use pdf_oxide::converters::ConversionOptions;
 use qdrant_client::{
   Payload, Qdrant,
-  qdrant::{DenseVector, Document, PointStruct, UpsertPointsBuilder, Vector, Vectors},
+  qdrant::{Document, PointStruct, UpsertPointsBuilder, Vector},
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{
-  any::{self, Any, TypeId},
-  collections::HashMap,
-  env,
-  error::Error,
-  pin,
-};
+use std::{collections::HashMap, env, error::Error};
 
 const DEFAULT_EMBED_SERVER: &str = "http://192.120.100.20:8888";
 const DEFAULT_QDRANT_SERVER: &str = "http://192.120.100.20:6334";
@@ -36,6 +25,7 @@ struct RaggerEngine {
 //
 // Llama Embedding Response
 //
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 struct EmbedResponseData {
   index: u32,
@@ -44,12 +34,14 @@ struct EmbedResponseData {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct EmbedResponseUsage {
   prompt_tokens: u32,
   total_tokens: u32,
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct EmbedResponse {
   model: String,
   object: String,
@@ -73,6 +65,7 @@ struct QdrantUpserter {
   embeddings: Option<Vec<f32>>,
 }
 
+#[allow(dead_code)]
 impl QdrantUpserter {
   fn new(collection: &str) -> Self {
     Self {
@@ -155,44 +148,51 @@ impl RaggerEngine {
 
     match mime {
       m if m == mime_guess::mime::APPLICATION_PDF => {
-        println!("reading a pdf file: {}", s);
-        let mut doc = pdf_oxide::PdfDocument::open(&file);
+        log::info!("reading a pdf file: {}", s);
+        let doc = pdf_oxide::PdfDocument::open(&file);
         if doc.is_err() {
           let err_str = format!("could not open pdf: {}", doc.unwrap_err());
-          eprintln!("{}", err_str);
+          log::error!("{}", err_str);
           return Err(err_str)?;
         }
         let mut doc = doc.unwrap();
 
         if let Some(pwd) = self.pdf_pw.clone() {
-          eprint!("authenticating pdf with provided password... ");
+          log::info!("authenticating pdf with provided password... ");
           match doc.authenticate(pwd.as_bytes()) {
             Ok(true) => {
-              eprintln!("\x1b[32mok!\x1b[0m");
+              log::info!("authentication succeeded!");
             }
             Ok(false) => {
-              eprintln!("\x1b[33mfailed!\x1b[0m");
+              log::warn!("authentication failed!");
             }
             Err(e) => {
-              eprintln!("\x1b[31merror\x1b[0m: {}", e);
+              log::error!("authentication error: {}", e);
             }
           }
         }
         let pages = doc.page_count().unwrap_or(0);
 
         for page in 0..pages {
-          match doc.extract_text(page) {
+          let options = ConversionOptions {
+            detect_headings: true,
+            preserve_layout: true,
+            include_images: false,
+            extract_tables: true,
+            ..Default::default()
+          };
+          match doc.to_markdown(page, &options) {
             Ok(t) => {
               data.push(t);
             }
             Err(e) => {
-              eprintln!("could not get page #{} text: {}", page, e);
+              log::error!("could not get page #{} text: {}", page, e);
             }
           }
         }
       }
       _ => {
-        println!("reading text file: {}", s);
+        log::info!("reading text file: {}", s);
         let buf = std::fs::read_to_string(file)?;
         data.push(buf);
       }
@@ -220,7 +220,7 @@ impl RaggerEngine {
     match serde_json::from_str(&body) {
       Ok(r) => Ok(r),
       Err(e) => {
-        eprintln!("embeddings error: {} {}", e, body);
+        log::error!("embeddings error: {} {}", e, body);
         Err(e)?
       }
     }
@@ -240,20 +240,20 @@ impl RaggerEngine {
       points.push(PointStruct::new(point_id, v, payload));
     }
 
-    println!("about to upsert {:?} into {}", points, data.collection);
+    log::info!("about to upsert {:?} into {}", points, data.collection);
 
     let up = UpsertPointsBuilder::new(data.collection, points);
     let resp = qdrant.upsert_points(up).await?;
 
     if resp.result.is_some() {
       let result = resp.result.unwrap();
-      println!(
+      log::debug!(
         "got qdrant result: [{}, {}]",
         result.operation_id.unwrap_or_default(),
         result.status
       );
     } else {
-      println!("got qdrant response: {:?}", resp);
+      log::debug!("got qdrant response: {:?}", resp);
     }
 
     Ok(())
@@ -275,7 +275,7 @@ impl RaggerEngine {
             yield s.to_string();
           }
           Err(e) => {
-            eprintln!("invalid UTF-8 buffer: {}", e);
+            log::error!("invalid UTF-8 buffer: {}", e);
           }
         }
       }
@@ -285,9 +285,11 @@ impl RaggerEngine {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-  let mut args = env::args();
+  let args = env::args();
   let mut engine: RaggerEngine = RaggerEngine::new();
   let mut qdrant_collection: Option<String> = None;
+  let mut log_file: Option<String> = None;
+  let mut log_level: log::LevelFilter = log::LevelFilter::Info;
 
   let mut iter = args.into_iter();
   while let Some(arg) = iter.next() {
@@ -303,9 +305,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
       }
       "--source" | "-s" => {
-        if let Some(s) = iter.next() {
-          engine.source = Some(s);
-        }
+        engine.source = iter.next();
       }
       "--chunk" => {
         if let Some(c) = iter.next() {
@@ -320,32 +320,50 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
       }
       "--pdfpw" => {
-        if let Some(p) = iter.next() {
-          engine.pdf_pw = Some(p);
-        }
+        engine.pdf_pw = iter.next();
       }
       "--qdrant-collection" | "-qc" => {
-        if let Some(c) = iter.next() {
-          qdrant_collection = Some(c);
-        }
+        qdrant_collection = iter.next();
       }
+      "--log-file" | "--log" | "-lf" => log_file = iter.next(),
+      "--debug" | "-d" => log_level = log::LevelFilter::Debug,
       _ => {}
     }
   }
 
-  println!();
-  println!("using:");
-  println!("engine.embed_server ...... {}", engine.embed_server);
-  println!("engine.qdrant_server ..... {}", engine.qdrant_server);
-  println!("engine.source ............ {:?}", engine.source);
-  println!("engine.chunk_size ........ {}", engine.chunk_size);
-  println!("engine.delimiters ........ {}", engine.delimiters);
-  println!("engine.pdf_pw ............ {:?}", engine.pdf_pw);
-  println!("qdrant_collection ........ {:?}", qdrant_collection);
-  println!();
+  // initialize log
+  if log_file.is_some() {
+    let log_file = log_file.unwrap();
+    eprintln!("\x1b[34minfo\x1b[0m: logging to file '{}'", log_file);
+    if let Err(e) = simple_logging::log_to_file(&log_file, log_level) {
+      eprintln!(
+        "\x1b[33mwarning\x1b[0m: could not log to file '{}' ({}). logging to stderr",
+        log_file, e
+      );
+      simple_logging::log_to_stderr(log_level);
+    }
+  } else {
+    eprintln!("\x1b[35minfo\x1b[0m: logging to stderr.");
+    simple_logging::log_to_stderr(log_level);
+  }
+
+  log::info!("");
+  log::info!("using:");
+  log::info!("engine.embed_server ...... {}", engine.embed_server);
+  log::info!("engine.qdrant_server ..... {}", engine.qdrant_server);
+  log::info!("engine.source ............ {:?}", engine.source);
+  log::info!("engine.chunk_size ........ {}", engine.chunk_size);
+  log::info!("engine.delimiters ........ {}", engine.delimiters);
+  log::info!("engine.pdf_pw ............ {:?}", engine.pdf_pw);
+  log::info!("qdrant_collection ........ {:?}", qdrant_collection);
+  log::info!("");
 
   if engine.source.is_none() {
     Err("--source is mandatory.")?
+  }
+
+  if qdrant_collection.is_none() {
+    log::warn!("\x1b[33mwarning\x1b[0m: Qdrant collection not defined!");
   }
 
   let source = engine.source.to_owned().unwrap();
@@ -373,13 +391,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
           .with_payload("source", &chunk);
 
         let mut model = "embeddings:default";
-        println!("getting embeddings from '{}' for '{:?}'...", model, chunk);
+        log::info!("getting embeddings from '{}' for '{:?}'...", model, chunk);
         let er = engine.get_embeddings(&chunk, Some(model)).await?;
 
         qu = qu.add_dense("text-dense", &er.data[0].embedding);
 
         model = "embeddings:colbert";
-        println!("getting embeddings from '{}' for '{:?}'...", model, chunk);
+        log::info!("getting embeddings from '{}' for '{:?}'...", model, chunk);
 
         let er = engine.get_embeddings(&chunk, Some(model)).await?;
         qu = qu.add_dense("text-colbert", &er.data[0].embedding);
@@ -389,7 +407,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         //
         engine.save_to_qdrant(qu).await?;
       } else {
-        let er = engine.get_embeddings(&chunk, None).await?;
+        let er = engine
+          .get_embeddings(&chunk, Some("embeddings:default"))
+          .await?;
 
         let collection: String = er
           .model
