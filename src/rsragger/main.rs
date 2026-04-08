@@ -1,5 +1,6 @@
 use async_stream::stream;
 use futures_util::{StreamExt, stream::Stream};
+use notify::Watcher;
 use pdf_oxide::converters::ConversionOptions;
 use qdrant_client::{
   Payload, Qdrant,
@@ -20,6 +21,7 @@ struct RaggerEngine {
   chunk_size: usize,
   delimiters: String,
   pdf_pw: Option<String>,
+  qdrant_collection: Option<String>,
 }
 
 //
@@ -128,6 +130,7 @@ impl RaggerEngine {
       chunk_size: 4096,
       delimiters: String::from(DEFAULT_CHUNK_DELIMS),
       pdf_pw: None,
+      qdrant_collection: None,
     }
   }
 
@@ -283,96 +286,13 @@ impl RaggerEngine {
   }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-  let args = env::args();
-  let mut engine: RaggerEngine = RaggerEngine::new();
-  let mut qdrant_collection: Option<String> = None;
-  let mut log_file: Option<String> = None;
-  let mut log_level: log::LevelFilter = log::LevelFilter::Info;
-
-  let mut iter = args.into_iter();
-  while let Some(arg) = iter.next() {
-    match arg.as_str() {
-      "--qdrant" | "-q" => {
-        if let Some(q) = iter.next() {
-          engine = engine.with_qdrant_server(q);
-        }
-      }
-      "--embed" | "-e" => {
-        if let Some(e) = iter.next() {
-          engine = engine.with_embed_server(e);
-        }
-      }
-      "--source" | "-s" => {
-        engine.source = iter.next();
-      }
-      "--chunk" => {
-        if let Some(c) = iter.next() {
-          if let Ok(i) = c.parse::<usize>() {
-            engine.chunk_size = i;
-          }
-        }
-      }
-      "--delims" | "--delimiters" => {
-        if let Some(d) = iter.next() {
-          engine.delimiters.clone_from(&d);
-        }
-      }
-      "--pdfpw" => {
-        engine.pdf_pw = iter.next();
-      }
-      "--qdrant-collection" | "-qc" => {
-        qdrant_collection = iter.next();
-      }
-      "--log-file" | "--log" | "-lf" => log_file = iter.next(),
-      "--debug" | "-d" => log_level = log::LevelFilter::Debug,
-      _ => {}
-    }
-  }
-
-  // initialize log
-  if log_file.is_some() {
-    let log_file = log_file.unwrap();
-    eprintln!("\x1b[34minfo\x1b[0m: logging to file '{}'", log_file);
-    if let Err(e) = simple_logging::log_to_file(&log_file, log_level) {
-      eprintln!(
-        "\x1b[33mwarning\x1b[0m: could not log to file '{}' ({}). logging to stderr",
-        log_file, e
-      );
-      simple_logging::log_to_stderr(log_level);
-    }
-  } else {
-    eprintln!("\x1b[35minfo\x1b[0m: logging to stderr.");
-    simple_logging::log_to_stderr(log_level);
-  }
-
-  log::info!("");
-  log::info!("using:");
-  log::info!("engine.embed_server ...... {}", engine.embed_server);
-  log::info!("engine.qdrant_server ..... {}", engine.qdrant_server);
-  log::info!("engine.source ............ {:?}", engine.source);
-  log::info!("engine.chunk_size ........ {}", engine.chunk_size);
-  log::info!("engine.delimiters ........ {}", engine.delimiters);
-  log::info!("engine.pdf_pw ............ {:?}", engine.pdf_pw);
-  log::info!("qdrant_collection ........ {:?}", qdrant_collection);
-  log::info!("");
-
-  if engine.source.is_none() {
-    Err("--source is mandatory.")?
-  }
-
-  if qdrant_collection.is_none() {
-    log::warn!("\x1b[33mwarning\x1b[0m: Qdrant collection not defined!");
-  }
-
-  let source = engine.source.to_owned().unwrap();
+async fn handle_content(engine: &RaggerEngine, source: &str) -> Result<(), Box<dyn Error>> {
   let mut content: Vec<String> = Vec::new();
 
   if std::fs::exists(&source).unwrap_or(false) {
     content = engine.read_file(std::path::PathBuf::from(&source))?;
   } else {
-    content.push(source.clone());
+    content.push(source.into());
   }
 
   // TODO: check endpoints health
@@ -385,7 +305,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
       // and upsert them accordingly
       //
       //
-      if let Some(collection) = qdrant_collection.as_ref() {
+      if let Some(collection) = engine.qdrant_collection.as_ref() {
         let mut qu = QdrantUpserter::new(collection)
           .with_payload("document", &source)
           .with_payload("source", &chunk);
@@ -430,4 +350,146 @@ async fn main() -> Result<(), Box<dyn Error>> {
   }
 
   Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+  let args = env::args();
+  let mut engine: RaggerEngine = RaggerEngine::new();
+  let mut log_file: Option<String> = None;
+  let mut log_level: log::LevelFilter = log::LevelFilter::Info;
+  let mut watch_dir: Option<String> = None;
+
+  let mut iter = args.into_iter();
+  while let Some(arg) = iter.next() {
+    match arg.as_str() {
+      "--qdrant" | "-q" => {
+        if let Some(q) = iter.next() {
+          engine = engine.with_qdrant_server(q);
+        }
+      }
+      "--embed" | "-e" => {
+        if let Some(e) = iter.next() {
+          engine = engine.with_embed_server(e);
+        }
+      }
+      "--source" | "-s" => {
+        engine.source = iter.next();
+      }
+      "--chunk" => {
+        if let Some(c) = iter.next() {
+          if let Ok(i) = c.parse::<usize>() {
+            engine.chunk_size = i;
+          }
+        }
+      }
+      "--delims" | "--delimiters" => {
+        if let Some(d) = iter.next() {
+          engine.delimiters.clone_from(&d);
+        }
+      }
+      "--pdfpw" => {
+        engine.pdf_pw = iter.next();
+      }
+      "--qdrant-collection" | "-qc" => {
+        engine.qdrant_collection = iter.next();
+      }
+      "--log-file" | "--log" | "-lf" => log_file = iter.next(),
+      "--debug" | "-d" => log_level = log::LevelFilter::Debug,
+      "--watch" => watch_dir = iter.next(),
+      _ => {}
+    }
+  }
+
+  // initialize log
+  if log_file.is_some() {
+    let log_file = log_file.unwrap();
+    eprintln!("\x1b[34minfo\x1b[0m: logging to file '{}'", log_file);
+    if let Err(e) = simple_logging::log_to_file(&log_file, log_level) {
+      eprintln!(
+        "\x1b[33mwarning\x1b[0m: could not log to file '{}' ({}). logging to stderr",
+        log_file, e
+      );
+      simple_logging::log_to_stderr(log_level);
+    }
+  } else {
+    eprintln!("\x1b[35minfo\x1b[0m: logging to stderr.");
+    simple_logging::log_to_stderr(log_level);
+  }
+
+  log::info!("");
+  log::info!("using:");
+  log::info!("engine.embed_server ...... {}", engine.embed_server);
+  log::info!("engine.qdrant_server ..... {}", engine.qdrant_server);
+  log::info!("engine.source ............ {:?}", engine.source);
+  log::info!("engine.chunk_size ........ {}", engine.chunk_size);
+  log::info!("engine.delimiters ........ {}", engine.delimiters);
+  log::info!("engine.pdf_pw ............ {:?}", engine.pdf_pw);
+  log::info!("qdrant_collection ........ {:?}", engine.qdrant_collection);
+  log::info!("watch_dir ................ {:?}", watch_dir);
+  log::info!("");
+
+  if engine.qdrant_collection.is_none() {
+    log::warn!("\x1b[33mwarning\x1b[0m: Qdrant collection not defined!");
+  }
+
+  if watch_dir.is_some() {
+    let watch_dir = watch_dir.unwrap();
+
+    log::info!("reading files from {}", watch_dir);
+
+    let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+
+    log::info!("file watcher: starting...");
+    let mut watcher = notify::recommended_watcher(tx)?;
+
+    log::info!("file watcher: started.");
+
+    watcher.watch(
+      std::path::Path::new(&watch_dir),
+      notify::RecursiveMode::Recursive,
+    )?;
+
+    for res in rx {
+      match res {
+        Ok(event) => {
+          log::debug!("watcher: got event {:?}", event);
+
+          if event.kind.is_create() {
+            log::info!("got 'created' event: {:?}", event);
+
+            for path in event.paths {
+              let file = path.to_string_lossy();
+
+              log::info!("handling path '{}'", file);
+              if path.is_file() {
+                log::info!("handling file '{}'", file);
+
+                match handle_content(&engine, &file).await {
+                  Ok(_) => log::info!("file '{}' handled successfully.", file),
+                  Err(e) => {
+                    log::error!("error while handling '{}': {}", file, e);
+                  }
+                }
+              } else {
+                log::warn!("path '{}' is not a file. skipping", file);
+              }
+            }
+          }
+        }
+        Err(e) => {
+          log::error!("watcher error: {}", e);
+        }
+      }
+    }
+
+    Ok(())
+  } else {
+    if engine.source.is_none() {
+      Err("--source is mandatory.")?
+    }
+
+    let source = engine.source.as_ref().unwrap();
+    handle_content(&engine, source).await
+  }
 }
