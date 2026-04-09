@@ -254,6 +254,8 @@ async fn get_qdrant_query(
       .add_prefetch("text-dense", dense_vector)
       .add_sparse_prefetch("text-sparse", &prompt, None)
       .with_fusion_dbsf(),
+    "none" | "skip" => query.cancel(true),
+    s if s.len() == 0 => query.cancel(true),
     _ => {
       return Err(format!("unknown RAG strategy {}", strategy))?;
     }

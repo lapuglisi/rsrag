@@ -16,6 +16,7 @@ pub struct QdrantQuery {
   pub query: Query,
   pub default_vector: Option<String>,
   pub limit: u64,
+  pub cancel: bool,
 }
 
 impl Default for QdrantQuery {
@@ -28,6 +29,7 @@ impl Default for QdrantQuery {
       query: Query::default(),
       default_vector: None,
       limit: QDRANT_QUERY_DEFAULT_LIMIT,
+      cancel: false,
     }
   }
 }
@@ -109,6 +111,11 @@ impl QdrantQuery {
     self
   }
 
+  pub fn cancel(mut self, b: bool) -> Self {
+    self.cancel = b;
+    self
+  }
+
   pub async fn run(
     self,
   ) -> Result<Vec<ScoredPoint>, Box<dyn std::error::Error + Send + Sync + 'static>> {
@@ -127,6 +134,10 @@ impl QdrantQuery {
     {
       log::error!("qdrant: collection {} does not exist!", collection);
       return Err(format!("qdrant: collection {} does not exist", collection))?;
+    }
+
+    if self.cancel {
+      return Err("query is cancelled.")?;
     }
 
     let mut qp = QueryPointsBuilder::new(collection)
