@@ -1,7 +1,9 @@
-use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{
-  CollectionExistsRequest, Fusion, PrefetchQuery, PrefetchQueryBuilder, Query, QueryPointsBuilder,
-  ScoredPoint,
+use qdrant_client::{
+  Qdrant,
+  qdrant::{
+    CollectionExistsRequest, Fusion, PrefetchQuery, PrefetchQueryBuilder, Query,
+    QueryPointsBuilder, ScoredPoint,
+  },
 };
 
 pub const QDRANT_QUERY_DEFAULT_THRESHOLD: f32 = 0.9;
@@ -119,6 +121,10 @@ impl QdrantQuery {
   pub async fn run(
     self,
   ) -> Result<Vec<ScoredPoint>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    if self.cancel {
+      return Err("query is cancelled.")?;
+    }
+
     let qdrant = self.qdrant.ok_or_else(|| "qdrant engine not initialized")?;
     let client = qdrant
       .client
@@ -134,10 +140,6 @@ impl QdrantQuery {
     {
       log::error!("qdrant: collection {} does not exist!", collection);
       return Err(format!("qdrant: collection {} does not exist", collection))?;
-    }
-
-    if self.cancel {
-      return Err("query is cancelled.")?;
     }
 
     let mut qp = QueryPointsBuilder::new(collection)
@@ -163,7 +165,7 @@ impl QdrantQuery {
 
     let res = match client.query(qp).await {
       Ok(v) => {
-        log::info!("got qdrant result: {:?}", v);
+        log::debug!("got qdrant result: {:?}", v);
         v
       }
       Err(e) => {
