@@ -44,6 +44,8 @@ pub struct CompletionRequest {
   pub rerank: Option<CompletionRequestRerank>,
   pub db_limit: Option<u64>,
   pub rag_strategy: Option<String>,
+  pub db_collection: Option<String>,
+  pub system_prompt: Option<String>,
 }
 
 impl Default for CompletionRequest {
@@ -60,6 +62,8 @@ impl Default for CompletionRequest {
       rerank: None,
       db_limit: None,
       rag_strategy: None,
+      db_collection: None,
+      system_prompt: None,
     }
   }
 }
@@ -217,6 +221,12 @@ async fn get_qdrant_query(
 
   let mut query = QdrantQuery::new(&qdrant);
 
+  if let Some(c) = request.db_collection.as_ref() {
+    if !c.is_empty() {
+      query = query.with_collection(&c);
+    }
+  }
+
   log::info!("generating qdrant query with strategy: {}", strategy);
 
   query = match strategy.as_str() {
@@ -365,7 +375,12 @@ async fn api_completion(
       messages.push(
         LlamaCompletionMessage::new()
           .with_role("system")
-          .with_content(RAGAPI_LLM_SYSTEM_PROMPT),
+          .with_content(
+            payload
+              .system_prompt
+              .unwrap_or(String::from(RAGAPI_LLM_SYSTEM_PROMPT))
+              .as_str(),
+          ),
       );
 
       messages.push(
@@ -383,7 +398,7 @@ async fn api_completion(
         LlamaCompletionMessage::new()
           .with_role("user")
           .with_content(
-            "Provided some context, answer th user's query with as much information as you can.",
+            "Provided some context, answer the user query with as much information as you can.",
           ),
       );
 
