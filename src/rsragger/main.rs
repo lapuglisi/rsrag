@@ -526,14 +526,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
       }
     }
-
-    Ok(())
   } else {
     if engine.source.is_none() {
       Err("--source is mandatory.")?
     }
 
     let source = engine.source.as_ref().unwrap();
-    do_the_harlem_shake(&engine, source).await
+    if let Err(e) = do_the_harlem_shake(&engine, source).await {
+      log::error!("error: {}", e);
+    }
   }
+
+  Ok(())
 }

@@ -144,6 +144,11 @@ impl<'r> RagApi<'r> {
       Err("[rsrag::api::listen] no qdrant engine configured.")?
     }
 
+    let cors_layer = tower_http::cors::CorsLayer::new()
+      .allow_headers(vec![http::header::CONTENT_TYPE])
+      .allow_origin(tower_http::cors::Any)
+      .allow_methods(vec![http::Method::POST, http::Method::GET]);
+
     let st = RagApiState {
       llama: Arc::new(self.llama.unwrap()),
       qdrant: Arc::new(self.qdrant.unwrap()),
@@ -153,7 +158,8 @@ impl<'r> RagApi<'r> {
     let app: Router = Router::new()
       .route("/api/embeddings", post(api_embeddings))
       .route("/api/completion", post(api_completion))
-      .with_state(st);
+      .with_state(st)
+      .layer(cors_layer);
 
     let address = format!("{}:{}", self.host, self.port);
 
