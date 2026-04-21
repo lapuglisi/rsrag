@@ -8,7 +8,11 @@ use qdrant_client::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, env, error::Error};
+use std::{
+  collections::{self, HashMap},
+  env,
+  error::Error,
+};
 
 const DEFAULT_EMBED_SERVER: &str = "http://192.120.100.20:8888";
 const DEFAULT_QDRANT_SERVER: &str = "http://192.120.100.20:6334";
@@ -21,7 +25,7 @@ struct RaggerEngine {
   chunk_size: usize,
   delimiters: String,
   pdf_pw: Option<String>,
-  qdrant_collection: Option<String>,
+  qdrant_collection: Option<Vec<String>>,
   sleep_between_upserts: f64,
 }
 
@@ -250,7 +254,8 @@ impl RaggerEngine {
       points.push(PointStruct::new(point_id, v, payload));
     }
 
-    log::info!("about to upsert {:?} into {}", points, data.collection);
+    log::debug!("about to upsert {:?} into {}", points, data.collection);
+    log::info!("about to upsert into {}", data.collection);
 
     let up = UpsertPointsBuilder::new(data.collection, points);
     let resp = qdrant.upsert_points(up).await?;
@@ -312,27 +317,31 @@ async fn do_the_harlem_shake(engine: &RaggerEngine, source: &str) -> Result<(), 
       // and upsert them accordingly
       //
       //
-      if let Some(collection) = engine.qdrant_collection.as_ref() {
-        let mut qu = QdrantUpserter::new(collection)
-          .with_payload("document", &source)
-          .with_payload("source", &chunk);
+      if let Some(collections) = engine.qdrant_collection.as_ref() {
+        for collection in collections {
+          log::info!("upserting points to collection '{}'", collection);
 
-        let mut model = "embeddings:default";
-        log::info!("getting embeddings from '{}' for '{:?}'...", model, chunk);
-        let er = engine.get_embeddings(&chunk, Some(model)).await?;
+          let mut qu = QdrantUpserter::new(collection)
+            .with_payload("document", &source)
+            .with_payload("source", &chunk);
 
-        qu = qu.add_dense("text-dense", &er.data[0].embedding);
+          let mut model = "embeddings:default";
+          log::debug!("getting embeddings from '{}' for '{:?}'...", model, chunk);
+          let er = engine.get_embeddings(&chunk, Some(model)).await?;
 
-        model = "embeddings:colbert";
-        log::info!("getting embeddings from '{}' for '{:?}'...", model, chunk);
+          qu = qu.add_dense("text-dense", &er.data[0].embedding);
 
-        let er = engine.get_embeddings(&chunk, Some(model)).await?;
-        qu = qu.add_dense("text-colbert", &er.data[0].embedding);
-        qu = qu.add_document("text-sparse", &chunk, "qdrant/bm25");
+          model = "embeddings:colbert";
+          log::debug!("getting embeddings from '{}' for '{:?}'...", model, chunk);
 
-        // got it, update embeddings for
-        //
-        engine.save_to_qdrant(qu).await?;
+          let er = engine.get_embeddings(&chunk, Some(model)).await?;
+          qu = qu.add_dense("text-colbert", &er.data[0].embedding);
+          qu = qu.add_document("text-sparse", &chunk, "qdrant/bm25");
+
+          // got it, update embeddings for
+          //
+          engine.save_to_qdrant(qu).await?;
+        }
       } else {
         let er = engine
           .get_embeddings(&chunk, Some("embeddings:default"))
@@ -408,7 +417,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         engine.pdf_pw = iter.next();
       }
       "--qdrant-collection" | "-qc" => {
-        engine.qdrant_collection = iter.next();
+        if let Some(arg) = iter.next() {
+          if engine.qdrant_collection.is_none() {
+            let mut cs: Vec<String> = Vec::new();
+            cs.push(arg);
+
+            engine.qdrant_collection = Some(cs);
+          } else {
+            let mut vec = engine.qdrant_collection.unwrap();
+            vec.push(arg);
+
+            engine.qdrant_collection = Some(vec);
+          }
+        }
       }
       "--log-file" | "--log" | "-lf" => log_file = iter.next(),
       "--debug" | "-d" => log_level = log::LevelFilter::Debug,
