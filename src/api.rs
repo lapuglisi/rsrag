@@ -46,6 +46,7 @@ pub struct CompletionRequest {
     pub temperature: Option<f32>,
     pub stream: Option<bool>,
     pub n_predict: Option<i32>,
+    pub max_completion_tokens: Option<i32>,
     pub top_k: Option<u32>,
     pub top_p: Option<f32>,
     pub threshold: Option<f32>,
@@ -66,6 +67,7 @@ impl Default for CompletionRequest {
             n_predict: Some(LLAMA_DEFAULT_NPREDICT),
             top_k: Some(LLAMA_DEFAULT_TOP_K),
             top_p: Some(LLAMA_DEFAULT_TOP_P),
+            max_completion_tokens: Some(4096),
             threshold: Some(QDRANT_QUERY_DEFAULT_THRESHOLD),
             rerank: None,
             db_limit: None,
@@ -462,6 +464,7 @@ async fn api_completion(
         .with_temperature(payload.temperature)
         .with_top_k(payload.top_k)
         .with_top_p(payload.top_p)
+        .with_max_tokens(payload.max_completion_tokens)
         .with_n_predict(payload.n_predict)
         .stream(payload.stream)
         .append_messages(messages);

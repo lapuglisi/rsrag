@@ -13,6 +13,7 @@ pub const LLAMA_DEFAULT_TEMPERATURE: f32 = 0.8;
 pub const LLAMA_DEFAULT_NPREDICT: i32 = 512;
 pub const LLAMA_DEFAULT_TOP_K: u32 = 40;
 pub const LLAMA_DEFAULT_TOP_P: f32 = 0.9;
+pub const LLAMA_DEFAULT_MAX_TOKENS: i32 = 4096;
 pub const LLAMA_DEFAULT_STREAM: bool = false;
 pub const LLAMA_RERANK_DEFAULT_THRESHOLD: f32 = 0.8;
 pub const LLAMA_RERANK_DEFAULT_TOP_N: u32 = 5;
@@ -26,6 +27,7 @@ pub struct LlamaCompletionRequest {
     pub n_predict: i32,
     pub top_k: u32,
     pub top_p: f32,
+    pub max_completion_tokens: i32,
     pub stream: bool,
 }
 
@@ -34,11 +36,12 @@ impl Default for LlamaCompletionRequest {
         Self {
             model: String::new(),
             messages: Vec::new(),
-            temperature: 0.8,
-            n_predict: 1024,
-            top_k: 40,
-            top_p: 0.9,
-            stream: false,
+            temperature: LLAMA_DEFAULT_TEMPERATURE,
+            n_predict: LLAMA_DEFAULT_NPREDICT,
+            top_k: LLAMA_DEFAULT_TOP_K,
+            top_p: LLAMA_DEFAULT_TOP_P,
+            max_completion_tokens: LLAMA_DEFAULT_MAX_TOKENS,
+            stream: LLAMA_DEFAULT_STREAM,
         }
     }
 }
@@ -84,6 +87,11 @@ impl LlamaCompletionRequest {
         self
     }
 
+    pub fn with_max_tokens(mut self, m: Option<i32>) -> Self {
+        self.max_completion_tokens = m.unwrap_or(LLAMA_DEFAULT_MAX_TOKENS);
+        self
+    }
+
     pub fn stream(mut self, s: Option<bool>) -> Self {
         self.stream = s.unwrap_or(LLAMA_DEFAULT_STREAM);
         self
@@ -108,6 +116,13 @@ impl Default for LlamaCompletionMessage {
 impl LlamaCompletionMessage {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn new_with_role(role: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            content: String::new(),
+        }
     }
 
     pub fn with_role(mut self, role: &str) -> Self {
