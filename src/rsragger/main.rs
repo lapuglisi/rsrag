@@ -8,11 +8,7 @@ use qdrant_client::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{
-  collections::{self, HashMap},
-  env,
-  error::Error,
-};
+use std::{collections::HashMap, env, error::Error};
 
 const DEFAULT_EMBED_SERVER: &str = "http://192.120.100.20:8888";
 const DEFAULT_QDRANT_SERVER: &str = "http://192.120.100.20:6334";
@@ -164,7 +160,7 @@ impl RaggerEngine {
           log::error!("{}", err_str);
           return Err(err_str)?;
         }
-        let mut doc = doc.unwrap();
+        let doc = doc.unwrap();
 
         if let Some(pwd) = self.pdf_pw.clone() {
           log::info!("authenticating pdf with provided password... ");
