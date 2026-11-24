@@ -6,6 +6,8 @@ const RAGAPI_DEFAULT_HOST: &str = "127.0.0.1";
 const RAGAPI_DEFAULT_PORT: u16 = 9091;
 const RAGAPI_DEFAULT_RAG_STRATEGY: &str = "main-dense";
 
+const ANTHROPIC_DEFAULT_VERSION: &str = "2026-10-21";
+
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct RagConfig {
@@ -15,6 +17,7 @@ pub struct RagConfig {
   pub http: HttpConfig,
   pub llama: LlamaConfig,
   pub qdrant: QdrantConfig,
+  pub anthropic: Option<AnthropicConfig>,
 }
 
 impl Default for RagConfig {
@@ -26,6 +29,7 @@ impl Default for RagConfig {
       http: HttpConfig::default(),
       llama: LlamaConfig::default(),
       qdrant: QdrantConfig::default(),
+      anthropic: None,
     }
   }
 }
@@ -60,6 +64,24 @@ impl Default for LlamaConfig {
       chat_server: "127.0.0.1".to_string(),
       embed_server: "127.0.0.1".to_string(),
       rerank_server: "127.0.0.1".to_string(),
+    }
+  }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct AnthropicConfig {
+  pub endpoint: String,
+  pub api_key: String,
+  pub version: String,
+}
+
+impl Default for AnthropicConfig {
+  fn default() -> Self {
+    Self {
+      endpoint: String::new(),
+      api_key: String::new(),
+      version: String::from(ANTHROPIC_DEFAULT_VERSION),
     }
   }
 }

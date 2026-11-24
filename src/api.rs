@@ -1,21 +1,15 @@
 #![allow(dead_code)]
-use axum::{
-  Json, Router,
-  extract::State,
-  handler::Handler,
-  http::StatusCode,
-  response::{IntoResponse, Redirect},
-  routing::{get, post},
-};
-use http::HeaderValue;
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::engine::{
+  AICompletionMessage,
+  anthropic::{AnthropicCompletionRequest, AnthropicEngine},
   llama::{
     LLAMA_DEFAULT_NPREDICT, LLAMA_DEFAULT_STREAM, LLAMA_DEFAULT_TEMPERATURE, LLAMA_DEFAULT_TOP_K,
-    LLAMA_DEFAULT_TOP_P, LLAMA_RERANK_DEFAULT_THRESHOLD, LlamaCompletionMessage,
-    LlamaCompletionRequest, LlamaEngine, RerankRequest,
+    LLAMA_DEFAULT_TOP_P, LLAMA_RERANK_DEFAULT_THRESHOLD, LlamaCompletionRequest, LlamaEngine,
+    RerankRequest,
   },
   qdrant::{QDRANT_QUERY_DEFAULT_LIMIT, QDRANT_QUERY_DEFAULT_THRESHOLD, QdrantEngine, QdrantQuery},
 };
@@ -43,6 +37,7 @@ pub struct EmbedResponse {
 pub struct CompletionRequest {
   pub model: String,
   pub prompt: String,
+  pub input: String,
   pub temperature: Option<f32>,
   pub stream: Option<bool>,
   pub n_predict: Option<i32>,
@@ -62,6 +57,7 @@ impl Default for CompletionRequest {
     Self {
       model: String::new(),
       prompt: String::new(),
+      input: String::new(),
       temperature: Some(LLAMA_DEFAULT_TEMPERATURE),
       stream: Some(LLAMA_DEFAULT_STREAM),
       n_predict: Some(LLAMA_DEFAULT_NPREDICT),
@@ -74,6 +70,16 @@ impl Default for CompletionRequest {
       rag_strategy: None,
       db_collection: None,
       system_prompt: None,
+    }
+  }
+}
+
+impl CompletionRequest {
+  fn get_prompt(self: &Self) -> String {
+    if self.prompt.is_empty() {
+      self.input.clone()
+    } else {
+      self.prompt.clone()
     }
   }
 }
@@ -98,6 +104,7 @@ impl Default for CompletionRequestRerank {
 pub struct RagApiState {
   llama: Arc<LlamaEngine>,
   qdrant: Arc<QdrantEngine>,
+  anthropic: Arc<Option<AnthropicEngine>>,
   config: Arc<crate::config::RagConfig>,
 }
 
@@ -106,6 +113,7 @@ pub struct RagApi<'r> {
   port: u16,
   llama: Option<LlamaEngine>,
   qdrant: Option<QdrantEngine>,
+  anthropic: Option<AnthropicEngine>,
   config: crate::config::RagConfig,
 }
 
@@ -116,6 +124,7 @@ impl<'r> RagApi<'r> {
       port: RAGAPI_DEFAULT_PORT,
       llama: None,
       qdrant: None,
+      anthropic: None,
       config: crate::config::RagConfig::default(),
     }
   }
@@ -137,6 +146,11 @@ impl<'r> RagApi<'r> {
 
   pub fn with_qdrant_engine(mut self, q: QdrantEngine) -> Self {
     self.qdrant = Some(q);
+    self
+  }
+
+  pub fn with_anthropic_engine(mut self, a: Option<AnthropicEngine>) -> Self {
+    self.anthropic = a;
     self
   }
 
@@ -162,13 +176,14 @@ impl<'r> RagApi<'r> {
     let st = RagApiState {
       llama: Arc::new(self.llama.unwrap()),
       qdrant: Arc::new(self.qdrant.unwrap()),
+      anthropic: Arc::new(self.anthropic),
       config: Arc::new(self.config),
     };
 
     let app: Router = Router::new()
       .route("/api/embeddings", post(api_embeddings))
       .route("/api/completion", post(api_completion))
-      .fallback(api_fallback)
+      .route("/chat/completions", post(api_completion))
       .with_state(st)
       .layer(cors_layer);
 
@@ -207,7 +222,7 @@ async fn get_qdrant_query(
   let llama = state.llama.as_ref();
   let qdrant = state.qdrant.as_ref();
   let config = state.config.as_ref();
-  let prompt = request.prompt.clone();
+  let prompt = request.get_prompt();
   let strategy = request
     .rag_strategy
     .clone()
@@ -324,7 +339,7 @@ async fn api_completion(
   log::info!("[api_completion] payload is {:?}", payload);
 
   // get embeddings for prompt
-  let mut messages: Vec<LlamaCompletionMessage> = Vec::new();
+  let mut messages: Vec<AICompletionMessage> = Vec::new();
 
   if st.qdrant.client.is_none() {
     return (
@@ -364,13 +379,15 @@ async fn api_completion(
         .collect();
 
       let context = if payload.rerank.is_some() {
-        let rerank = payload.rerank.unwrap();
+        let rerank = payload.rerank.as_ref().unwrap();
 
         log::debug!("reranking vectordb results...");
 
+        let prompt = payload.get_prompt();
+
         let rr = RerankRequest::new()
-          .with_query(&payload.prompt)
-          .with_rerank_model(rerank.model)
+          .with_query(&prompt)
+          .with_rerank_model(rerank.model.clone())
           .with_threshold(rerank.threshold.unwrap())
           .add_documents(&docs);
 
@@ -390,55 +407,53 @@ async fn api_completion(
       };
 
       messages.push(
-        LlamaCompletionMessage::new()
-          .with_role("system")
-          .with_content(
-            payload
-              .system_prompt
-              .unwrap_or(String::from(RAGAPI_LLM_SYSTEM_PROMPT))
-              .as_str(),
-          ),
+        AICompletionMessage::new().with_role("system").with_content(
+          payload
+            .system_prompt
+            .unwrap_or(String::from(RAGAPI_LLM_SYSTEM_PROMPT))
+            .as_str(),
+        ),
       );
 
       messages.push(
-        LlamaCompletionMessage::new()
+        AICompletionMessage::new()
           .with_role("user")
           .with_content("Hi, LLM."),
       );
       messages.push(
-        LlamaCompletionMessage::new()
+        AICompletionMessage::new()
           .with_role("assistant")
           .with_content("Hi, user."),
       );
 
       messages.push(
-        LlamaCompletionMessage::new()
+        AICompletionMessage::new()
           .with_role("user")
           .with_content(
-            "Provided some context, answer the user query with as much information as you can.",
+            "Provided some context, answer the user query with as much information as you can, and in the original language.",
           ),
       );
 
       messages.push(
-        LlamaCompletionMessage::new()
+        AICompletionMessage::new()
           .with_role("assistant")
           .with_content("Sure! What is the context?"),
       );
 
       messages.push(
-        LlamaCompletionMessage::new()
+        AICompletionMessage::new()
           .with_role("user")
           .with_content(context.join("\n").as_str()),
       );
 
       messages.push(
-        LlamaCompletionMessage::new()
+        AICompletionMessage::new()
           .with_role("assistant")
           .with_content("Perfetct. And what do you want to know?"),
       );
 
       messages.push(
-        LlamaCompletionMessage::new()
+        AICompletionMessage::new()
           .with_role("user")
           .with_content(&payload.prompt),
       );
@@ -446,13 +461,37 @@ async fn api_completion(
     Err(e) => {
       log::warn!("similarity search: {}", e);
       messages.push(
-        LlamaCompletionMessage::new()
+        AICompletionMessage::new()
           .with_role("user")
           .with_content(&payload.prompt),
       );
     }
   }
 
+  log::info!("About to decide which request to make: {:?}", st.anthropic);
+
+  if st.anthropic.is_some() {
+    let anthropic = (*st.anthropic).clone().unwrap();
+
+    log::info!(
+      "Sending completion request to Anthropic endpoint {:?}.",
+      anthropic
+    );
+
+    let msgs: Vec<AICompletionMessage> = messages
+      .into_iter()
+      .filter(|item| item.role != "system")
+      .collect();
+
+    let req = AnthropicCompletionRequest::new()
+      .with_model(&payload.model)
+      .with_max_tokens(payload.max_completion_tokens)
+      .append_messages(msgs);
+
+    log::info!("Sending Anthropic request: {:?}", req);
+
+    return anthropic.get_completion(req).await.into_response();
+  }
   // Prepare a completion request
   let lcr = LlamaCompletionRequest::new()
     .with_model(&payload.model)
@@ -467,32 +506,4 @@ async fn api_completion(
   log::debug!("request llama with {:?}", lcr);
 
   st.llama.get_completion(lcr).await.into_response()
-}
-
-#[axum::debug_handler]
-async fn api_get_models(State(st): State<RagApiState>) -> impl IntoResponse {
-  let mut res = st.llama.get_models().await.into_response();
-
-  let res_ct = match res.headers().get("Content-type") {
-    Some(v) => v.to_str().unwrap_or(""),
-    None => "",
-  };
-
-  if res_ct.is_empty() {
-    log::info!("Appending Content-Type to '/get/models' response.");
-    res.headers_mut().append(
-      "Content-Type",
-      HeaderValue::from_str("application/json").unwrap(),
-    );
-  }
-
-  res
-}
-
-#[axum::debug_handler]
-async fn api_fallback(State(st): State<RagApiState>) -> Redirect {
-  let llama_url = st.llama.llama_server.as_str();
-  log::warn!("axum: fallling back request to {}", llama_url);
-
-  Redirect::permanent(llama_url)
 }

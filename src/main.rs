@@ -1,3 +1,4 @@
+use crate::engine::anthropic::AnthropicEngine;
 use crate::engine::llama::LlamaEngine;
 use crate::{config::RagConfig, engine::qdrant::QdrantEngine};
 
@@ -69,12 +70,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let qdrant: QdrantEngine =
     QdrantEngine::new(qdrant_url).with_collection(&settings.qdrant.collection);
 
+  let anthropic = match &settings.anthropic {
+    Some(a) => Some(
+      AnthropicEngine::new()
+        .with_endpoint(&a.endpoint)
+        .with_api_key(&a.api_key),
+    ),
+    None => None,
+  };
+
   // then create the api object
   let api = api::RagApi::new()
     .with_listen_host(&settings.http.host)
     .with_listen_port(settings.http.port)
     .with_llama_engine(llama)
     .with_qdrant_engine(qdrant)
+    .with_anthropic_engine(anthropic)
     .with_config(&settings);
 
   // the do it
